@@ -96,6 +96,27 @@ func (d DatatypeInfo) IsString() bool {
 	return d.Class == libhdf5.ClassString || d.Class == libhdf5.ClassVLen
 }
 
+// IsCompound 报告类型是否为复合类型。
+func (d DatatypeInfo) IsCompound() bool { return d.Class == libhdf5.ClassCompound }
+
+// IsEnum 报告类型是否为枚举。
+func (d DatatypeInfo) IsEnum() bool { return d.Class == libhdf5.ClassEnum }
+
+// IsInteger 报告类型是否为整数（含枚举与位域，它们的底层都是整数）。
+func (d DatatypeInfo) IsInteger() bool {
+	switch d.Class {
+	case libhdf5.ClassInteger, libhdf5.ClassEnum, libhdf5.ClassBitfield:
+		return true
+	}
+	return false
+}
+
+// IsFloat 报告类型是否为浮点。
+func (d DatatypeInfo) IsFloat() bool { return d.Class == libhdf5.ClassFloat }
+
+// IsNumeric 报告类型能否以数值方式展示（也就能画成图像）。
+func (d DatatypeInfo) IsNumeric() bool { return d.IsInteger() || d.IsFloat() }
+
 // IsVariableString 报告类型是否为变长字符串。
 func (d DatatypeInfo) IsVariableString() bool {
 	return d.VariableString || d.Class == libhdf5.ClassVLen

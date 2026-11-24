@@ -3,6 +3,7 @@ package view
 import (
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/egoist/mygo/ui"
 
@@ -19,6 +20,29 @@ type Source interface {
 	// Children 返回节点的直接成员；非容器返回 nil, nil。
 	Children(n *hdf5.Node) ([]*hdf5.Node, error)
 }
+
+// Reader 是表格视图的只读数据来源。
+//
+// 真实实现是 *hdf5.Document；测试注入假实现，
+// 从而记录每次请求的 start/count，或制造读取错误与延迟。
+type Reader interface {
+	ReadSlice(node *hdf5.Node, start, count []uint64) (*hdf5.Slice, error)
+	ReadStrings(node *hdf5.Node) (*hdf5.Strings, error)
+	ReadCompound(node *hdf5.Node) (*hdf5.Compound, error)
+}
+
+// Meta 是数据集描述（维度、类型、布局）的来源。
+//
+// 真实实现直接调 *hdf5.Node.Info；测试注入假实现，
+// 从而在没有真实文件时构造任意维度（含超大与 3 维）的数据集。
+type Meta interface {
+	Info(n *hdf5.Node) (*hdf5.DatasetInfo, error)
+}
+
+// nodeMeta 是 Meta 的默认实现。
+type nodeMeta struct{}
+
+func (nodeMeta) Info(n *hdf5.Node) (*hdf5.DatasetInfo, error) { return n.Info() }
 
 // docSource 把 *hdf5.Document 适配成 Source。
 type docSource struct{ doc *hdf5.Document }
@@ -70,6 +94,49 @@ type App struct {
 
 	// Err 是最近一次读取失败的原因，由视图显示为提示。
 	Err error
+
+	// rd 是表格读取来源；为 nil 时用 doc。
+	rd Reader
+	// meta 是数据集描述来源；为 nil 时直接问节点。
+	meta Meta
+
+	// async 是读取调度器，invalidate 是「请重绘」的回调。
+	// 两者都可由 main.go 注入；未注入时读取同步执行、结果直接生效。
+	async      Async
+	invalidate func()
+
+	// gen 是表格请求的代号，每次换对象或翻页自增。
+	// 迟到的读取结果因代号不符被丢弃（任务 5.7）。
+	gen uint64
+
+	// Table 是分页状态，TableList 是表格控件的选择状态。
+	Table     TableState
+	TableList ui.ListState
+
+	// tableKey 是当前已就绪结果对应的请求，
+	// inflight 是正在读取的请求（未完成时为 nil）。
+	//
+	// tmu 保护 inflight 与「结果是否已写回」的判定：
+	// 后台 goroutine 写、UI 线程读，两者不能无锁共享。
+	tmu      sync.Mutex
+	tableKey tableKey
+	inflight *tableKey
+
+	// pageCache 保存已读过的页，避免来回翻页重复读取（任务 5.2）。
+	// 键是请求的文本指纹，容量受 pageCacheLimit 限制。
+	pageCache map[string]pageEntry
+	pageOrder []string
+
+	// tableData 是最近一次读取成功的数据（*hdf5.Slice / *hdf5.Strings / *hdf5.Compound）。
+	tableData any
+	// tableErr 是最近一次读取失败的原因。
+	tableErr error
+
+	// curInfo 是当前数据集描述的快照，由 Layout 每帧刷新。
+	// 布局与单元格格式化都要用它，缓存一份避免同一帧解码两次。
+	curInfo *hdf5.DatasetInfo
+	// errDetail 控制错误详情是否展开（任务 5.6 的「详情入口」）。
+	errDetail bool
 }
 
 // NewApp 创建空状态的应用。
@@ -90,6 +157,18 @@ func (a *App) reset() {
 	a.Current = nil
 	a.pending = nil
 	a.LoadCalls = 0
+	a.Err = nil
+	a.Table = TableState{}
+	a.TableList = ui.ListState{}
+	a.tableKey = tableKey{}
+	a.inflight = nil
+	a.pageCache = make(map[string]pageEntry)
+	a.pageOrder = nil
+	a.tableData = nil
+	a.tableErr = nil
+	a.curInfo = nil
+	a.errDetail = false
+	a.gen = 0
 }
 
 // SetSource 换用新的数据来源，并重置全部树状态。
@@ -98,6 +177,7 @@ func (a *App) SetSource(src Source) error {
 	a.src = src
 	if src == nil {
 		a.doc = nil
+		a.rd = nil
 		return nil
 	}
 	root := src.Root()
@@ -111,6 +191,7 @@ func (a *App) SetSource(src Source) error {
 	a.TreeRow = 0
 	a.Selected = &root.ID
 	a.Current = root
+	a.resetTable()
 	return nil
 }
 
@@ -125,6 +206,31 @@ func (a *App) SetDocument(doc *hdf5.Document) error {
 
 // Document 返回当前文档；没有时返回 nil。
 func (a *App) Document() *hdf5.Document { return a.doc }
+
+// SetReader 覆盖表格读取来源；传 nil 恢复使用当前文档。
+func (a *App) SetReader(rd Reader) { a.rd = rd }
+
+// SetMeta 覆盖数据集描述来源；传 nil 恢复直接问节点。
+func (a *App) SetMeta(m Meta) { a.meta = m }
+
+// info 返回当前对象的描述。
+func (a *App) info(n *hdf5.Node) (*hdf5.DatasetInfo, error) {
+	if a.meta != nil {
+		return a.meta.Info(n)
+	}
+	return n.Info()
+}
+
+// reader 返回当前使用的读取来源。
+func (a *App) reader() Reader {
+	if a.rd != nil {
+		return a.rd
+	}
+	if a.doc == nil {
+		return nil
+	}
+	return a.doc
+}
 
 // HasDocument 报告是否已打开文档。
 func (a *App) HasDocument() bool { return len(a.roots) > 0 }
@@ -216,8 +322,13 @@ func (a *App) syncRow() {
 	if n == nil {
 		return
 	}
+	prev := a.Current
 	a.Selected = &n.ID
 	a.Current = n
+	if prev == nil || prev.ID != n.ID {
+		// 换对象：清空表格缓存与分页，避免显示上一个数据集的数据。
+		a.resetTable()
+	}
 }
 
 // Select 把节点设为当前对象，并展开它的祖先使其可见。
@@ -231,8 +342,12 @@ func (a *App) Select(id hdf5.NodeID) {
 	}
 	a.openAncestors(n.Path)
 	a.Tree.Generation++
+	prev := a.Current
 	a.Selected = &n.ID
 	a.Current = n
+	if prev == nil || prev.ID != n.ID {
+		a.resetTable()
+	}
 	a.pending = &n.ID
 }
 
