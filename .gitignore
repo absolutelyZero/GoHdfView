@@ -1,0 +1,8 @@
+/build/
+/.mygo/
+/.probe/
+mygo_windows_*.syso
+
+# 根目录下 `go build` 的直接产物；正式产物在 build/ 里
+/gohdfview
+/gohdfview.exe
