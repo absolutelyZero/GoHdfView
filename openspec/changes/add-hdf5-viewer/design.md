@@ -109,7 +109,7 @@ UI 线程发起读取请求，工作 goroutine 执行 `ReadSlice`，结果通过
 
 - [库的 `ReadSlice` 只返回 `[]float64`，uint64/int64 大值丢精度] → 用 `≈` 标记并在元数据中标注；spec 已声明该限制。后续增强点在 `internal/hdf5` 内，UI 无需改动。
 - [SZIP / N-bit / Scale-offset 数据集无法解码] → `internal/hdf5` 把这类错误映射为 `ErrUnsupported`，数据视图显示「该过滤器不受支持」，元数据仍完整可读；对象树不因此隐藏节点。
-- [硬链接成环的文件在 `Open` 阶段即被拒绝] → 归类为 `ErrUnsupported`，提示文案说明「文件包含循环链接，本版本不支持」，而不是显示为「文件损坏」。
+- [硬链接成环的文件可能无法打开或无限展开] → 实测（`h5py_cycle.h5`，`/a/back` 硬链接回 `/`）：解析库的 `visitedBTrees` 守卫让文件**正常打开**，回环成员被当作空组，树不会无限展开。`internal/hdf5` 仍保留 `object graph cycle` 文本到 `ErrUnsupported` 的映射，覆盖库在其它路径上拒绝成环文件的情况；两种表现都满足「不挂死、不显示错误数据」的要求。
 - [`ui.Table` 没有可见行范围回调，窗口化只能按页做] → 页大小可配置；翻页延迟由「读取中」状态覆盖。若后续框架提供可见区回调，只需替换 `internal/view/table.go` 的页计算。
 - [MyGo 要求 Go 1.27.3，构建机 Go 版本可能更旧] → `go.mod` 声明 `go 1.27.3` 与 `toolchain` 指令；README 记录 `GOTOOLCHAIN=auto` 的用法。本机 `E:\gocode` 不可写的问题用 `GOMODCACHE` 覆盖，不影响最终用户。
 - [视图按帧重建，误把 build 值存进结构体会在运行时静默失效] → 所有跨帧状态集中在 `App` 结构体与 `ListState`/`OutlineState`；CI 中运行 `mygo vet`（该命令专门检查这类错误）。
@@ -124,3 +124,5 @@ UI 线程发起读取请求，工作 goroutine 执行 `ReadSlice`，结果通过
 
 - 表格的默认页尺寸（行 × 列）取多少最合适？取决于目标用户的数据形态，可在实现时用 100×50 起步，之后按实测调整，不影响 spec 与任务拆分。
 - 伪彩色的默认色带选哪一种（viridis 风格还是灰度）？属视觉偏好，实现时先给灰度，色带作为可选项加入。
+
+**已决定**：表格默认页取 100 行 × 50 列（`defaultPageRows`/`defaultPageCols`），实测在 100000×10000 的数据集上首屏只读一页、翻页无重复读取。伪彩色先只提供灰度（`grayscale`），值域可手动覆盖；彩色色带留作后续增强。

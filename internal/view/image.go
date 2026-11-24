@@ -126,9 +126,9 @@ func downsampleStep(rows, cols int) (stepRow, stepCol int) {
 
 // loadImage 读取（按需降采样的）数据并生成位图。
 //
-// 采样用 ReadSlice 的块读取而非 Hyperslab 的 stride：
-// 解析库的 stride 版本在分块数据集上会退化成整块解码，
-// 这里按块读、再在块内按步长抽取，读取量与像素数同阶（任务 6.4）。
+// 采样走 ReadStrided 的 Hyperslab stride：只解码落在网格上的元素，
+// 读取量 = 像素数，与数据集总量无关（任务 6.4）。早期实现按块读再在块内
+// 抽样，在 10000×10000 上会退化成整份读取，已弃用。
 func (a *App) loadImage(l ImageLayout) {
 	rd := a.reader()
 	if rd == nil || a.Current == nil {
@@ -261,10 +261,27 @@ func imageBody(c *ui.Context, app *App, l ImageLayout) {
 		return
 	}
 	w, h := app.Image.bitmap.Size()
+	dw, dh := displaySize(w, h, imageDisplaySide)
 	ui.Column(c).Fill().Center().Children(func() {
-		ui.Image(c, app.Image.bitmap).Width(float32(min(w, imageMaxSide))).
-			Height(float32(min(h, imageMaxSide)))
+		// Pixelated 让放大保持最近邻，格点边界清晰可辨。
+		ui.Image(c, app.Image.bitmap.Pixelated()).Width(dw).Height(dh)
 	})
+}
+
+// imageDisplaySide 是图像在窗口里最长边的目标像素数。
+//
+// 小数据集（例如 100×50）直接按原尺寸画会缩成一小块，
+// 所以放大到便于观察的尺寸；放大用最近邻，不引入插值。
+const imageDisplaySide = 560
+
+// displaySize 在保持长宽比的前提下把图像缩放到最长边为 side。
+func displaySize(w, h, side int) (float32, float32) {
+	if w <= 0 || h <= 0 {
+		return float32(side), float32(side)
+	}
+	longest := max(w, h)
+	scale := float64(side) / float64(longest)
+	return float32(math.Round(float64(w) * scale)), float32(math.Round(float64(h) * scale))
 }
 
 // colorbar 画一条从最小值到最大值的灰阶色标（design.md 决策 5：

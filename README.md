@@ -4,6 +4,27 @@
 
 **只读**：本项目不提供任何写入、编辑或另存为能力，也不会修改被打开的文件。写入 API 仅出现在测试夹具生成脚本 `internal/hdf5/testdata/gen.go`（`//go:build ignore`，不参与常规构建），并由 `internal/hdf5/readonly_test.go` 扫描源码来保证这一点。
 
+![空状态](docs/screenshots/empty-state.png)
+
+## 功能
+
+| 区域 | 能力 |
+| --- | --- |
+| 对象树 | 按层次展示组、数据集与命名类型；数据集名后附维度概要（如 `[100×50]`）；惰性加载子节点，展开/折叠、全部展开（`Ctrl+Shift+E`）、全部折叠、方向键导航；上万成员的分组不会卡住界面。 |
+| 元数据 | 数据空间（秩、维度、最大值、元素总数）、数据类型（类别、元素大小、字节序、符号性、字符串长度与填充、复合成员、枚举成员表）、存储布局（紧凑/连续/分块、分块尺寸、按应用顺序列出的过滤器及参数）。 |
+| 属性 | 列出对象的全部属性及其类型与值；只读展示，双击不会进入编辑。 |
+| 数据视图 | 表格按页窗口化读取（默认 100 行 × 50 列）；1D 单列、2D 矩阵、3D 及以上固定前导维；行号列号从 0 开始；浮点非有限值显示 `NaN`/`+Inf`/`-Inf`；枚举显示成员名；复合数据集每个成员一列；变长字符串可点击查看被截断的全文。 |
+| 图像视图 | 二维数值数据集渲染为灰度图，带值域输入与色标；大数组按步长降采样（`ReadStrided`），读取量只与像素数有关。非数值或非二维数据集会说明不可用原因。 |
+| 外壳 | 左树 / 右工作区 / 底部状态栏；菜单与快捷键（`Ctrl+O` 打开、`Ctrl+W` 关闭、`Ctrl+1/2/3` 切视图）；系统文件对话框、拖放打开、命令行参数打开；错误提示非模态且可关闭。 |
+
+![对象树与元数据](docs/screenshots/tree-and-metadata.png)
+
+![数据表格](docs/screenshots/data-table.png)
+
+![图像视图](docs/screenshots/image-view.png)
+
+更多走查记录（夹具清单、逐 scenario 结论、受库限制项）见 [`docs/verification.md`](docs/verification.md)。
+
 ## 构建前提
 
 | 要求 | 说明 |
@@ -36,7 +57,9 @@ CGO_ENABLED=0 go build ./...
 CGO_ENABLED=0 go test ./...
 
 # 4) 打包原生桌面应用
-go tool mygo build -skip-installer
+#    mygo_nowebview：本项目只用原生 UI，不需要 WebView2 运行时；
+#    加上它后产物小约 0.6 MB，二进制里也不再含 WebView2 的加载代码与字符串。
+GOFLAGS=-tags=mygo_nowebview CGO_ENABLED=0 go tool mygo build -skip-installer
 ```
 
 产物在 `build/windows-amd64/GoHdfView.exe`，可直接双击运行，或从命令行传入文件路径：
@@ -46,6 +69,14 @@ go tool mygo build -skip-installer
 ```
 
 `-skip-installer` 用来跳过 Windows 安装包的生成；不需要安装包时加上它，可以避免下载 NSIS 到 `%LOCALAPPDATA%\mygo`。
+
+### 产物依赖自检
+
+```bash
+go version -m build/windows-amd64/GoHdfView.exe
+```
+
+应看到 `CGO_ENABLED=0`、`-tags=mygo_nowebview,mygo_nodownload,mygo_noinspector`，依赖只有 `purego`、`mygo`、`go-text/typesetting`、`scigolib/hdf5` 与 `golang.org/x/{image,net,text}`——没有 HDF5 C 库，也没有 WebView2；PE 导入表只有 `kernel32.dll`。验证细节见 [`docs/verification.md`](docs/verification.md)。
 
 ## 开发
 
@@ -72,16 +103,43 @@ go tool mygo dev
 ```
 main.go                     应用入口：窗口、菜单、命令行参数
 internal/hdf5/              只读 HDF5 访问层（解析库的唯一使用者）
+internal/hdf5/testdata/     测试夹具与生成脚本（gen.go、gen_h5py.py）
 internal/view/              MyGo 界面：对象树、元数据、表格、图像
+docs/                       验证记录与界面截图
 resources/icon.png          应用图标
 openspec/                   规格与变更记录（OpenSpec）
 ```
 
+## 测试与验证
+
+```bash
+CGO_ENABLED=0 go test ./...   # 124 个用例，覆盖访问层、各视图与集成路径
+go vet ./...
+go tool mygo vet              # 检查把 build 值存进结构体这类 MyGo 专属错误
+```
+
+夹具由 `internal/hdf5/testdata/gen.go`（scigolib 写接口）与 `gen_h5py.py`（h5py）生成，重新生成后需重跑测试。手工走查的夹具清单与逐条结论在 [`docs/verification.md`](docs/verification.md)。
+
 ## 已知限制
 
+下表与 [`design.md`](openspec/changes/add-hdf5-viewer/design.md) 的 Risks / Trade-offs 一一对应，编号一致。
+
+| # | 限制 | 表现与处理 |
+| --- | --- | --- |
+| 1 | 8 字节整数精度 | 解析库的切片读取统一返回 `[]float64`，超过 2^53 的 `int64`/`uint64` 无法精确表示。这类值显示时追加 ` ≈` 标记，元数据里同时给出原始数据类型；无符号 64 位整数不会显示成负数。 |
+| 2 | 过滤器支持范围 | 只支持 deflate、shuffle、fletcher32、lzf；SZIP、N-bit、Scale-offset 与第三方过滤器无法解码，数据视图会显示「该过滤器不受支持，无法解码」，对象树与元数据仍完整可读。 |
+| 3 | 硬链接成环的文件 | 实测可正常打开，回环处的成员被当作空组，不会无限展开；若解析库在其它路径上拒绝成环文件，则归类为「特性不受支持」而非「文件损坏」。 |
+| 4 | 表格按页读取 | 框架的表格控件没有可见行范围回调，只能按页窗口化（默认 100 行 × 50 列）。翻页会重新读取该页，已读页有缓存；单元格不会被重复读取。 |
+| 5 | Go 版本要求 | `go.mod` 声明 `go 1.27.3` 与 `toolchain go1.27.3`；构建机 Go 更旧时由 `GOTOOLCHAIN=auto` 自动取用。 |
+| 6 | 视图按帧重建 | 跨帧状态必须放在 `App` 与 `ListState`/`OutlineState` 里，误把 build 值存进结构体会在运行时静默失效；`go tool mygo vet` 专门检查这类错误，已纳入验收。 |
+| 7 | 读取期间文件被外部删除或截断 | 读取失败归类为「文件已损坏」，视图标注该区域不可用，文档保持打开，不尝试自动重开。 |
+| 8 | 单文档模型 | 同时只保留一个打开的文档；多标签对照浏览留待后续变更。 |
+
+其它已知边界：
+
 - 只读，且只支持 HDF5；打开 HDF4 文件会明确提示「仅支持 HDF5」。
-- 依赖的纯 Go 解析库 `github.com/scigolib/hdf5` 尚不支持 SZIP、N-bit、Scale-offset 等第三方过滤器；使用这些过滤器的数据集会被标记为不受支持，而不是显示错误数据。
 - 不支持 SWMR 与并行 I/O。
+- 软链接与外部链接成员不显示：解析库在加载阶段跳过非硬链接，也未暴露链接种类；应用侧已备好链接节点的字形与 `NodeKind`，等库补齐后即可展示。
 - 仅在 Windows 上验证；macOS 与 Linux 未做验证。
 
 ## 许可

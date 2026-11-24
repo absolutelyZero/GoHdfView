@@ -1,6 +1,8 @@
 package view
 
 import (
+	"errors"
+	"fmt"
 	"math"
 	"strconv"
 	"strings"
@@ -76,6 +78,7 @@ func (a *App) resetTable() {
 	a.tableData = nil
 	a.tableErr = nil
 	a.inflight = nil
+	a.cellDetail = ""
 	a.gen++
 }
 
@@ -340,13 +343,13 @@ func (a *App) ensureTable(l TableLayout) {
 		switch kind {
 		case readStrings:
 			if total > stringElemLimit {
-				err = hdf5.ErrTooLarge
+				err = tooLargeString(total)
 			} else {
 				data, err = rd.ReadStrings(node)
 			}
 		case readCompound:
 			if total > stringElemLimit {
-				err = hdf5.ErrTooLarge
+				err = tooLargeString(total)
 			} else {
 				data, err = rd.ReadCompound(node)
 			}
@@ -613,6 +616,10 @@ func failedTable(c *ui.Context, app *App, l TableLayout, rs, rc, cs, cc int) {
 }
 
 // stringsTable 以单列展示字符串数据集。
+// stringsTable 以单列展示字符串数据集。
+//
+// 单元格里的长文本会被截断；点击单元格把完整值放到上方的详情区，
+// 这是 spec「变长字符串数据集」要求的「可通过单元格详情查看完整值」。
 func stringsTable(c *ui.Context, app *App, l TableLayout) {
 	data, ok := app.tableData.(*hdf5.Strings)
 	if !ok || data == nil {
@@ -620,6 +627,9 @@ func stringsTable(c *ui.Context, app *App, l TableLayout) {
 			ui.Text(c, "正在读取…").TextColor(c.Theme().TextMuted)
 		})
 		return
+	}
+	if app.cellDetail != "" {
+		cellDetailPanel(c, app)
 	}
 	cols := []ui.TableColumn{
 		{Title: "", RowHeader: true, Width: 64, Fixed: true},
@@ -640,8 +650,24 @@ func stringsTable(c *ui.Context, app *App, l TableLayout) {
 			ui.Text(c, "—").TextColor(c.Theme().TextMuted)
 			return
 		}
-		ui.Text(c, truncateCell(data.Values[idx])).SingleLine()
+		full := data.Values[idx]
+		ui.Text(c, truncateCell(full)).SingleLine().
+			OnClick(func() { app.cellDetail = full })
 	}).Grow(1)
+}
+
+// cellDetailPanel 显示被点开的单元格全文。
+func cellDetailPanel(c *ui.Context, app *App) {
+	ui.Column(c).Gap(4).Padding(8, 12).Children(func() {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, "单元格全文").FontSize(12).TextColor(c.Theme().TextMuted)
+			ui.Textf(c, "%d 个字符", len([]rune(app.cellDetail))).
+				FontSize(12).TextColor(c.Theme().TextMuted)
+			ui.Spacer(c).Grow(1)
+			ui.Button(c, "收起").OnClick(func() { app.cellDetail = "" })
+		})
+		ui.Text(c, app.cellDetail).FontSize(12)
+	})
 }
 
 // compoundTable 以每成员一列展示复合数据集。
@@ -717,10 +743,20 @@ func pageRowTotal(app *App, l TableLayout) int {
 // 提示是非模态的：表格其余部分照常渲染，用户可以继续浏览其它对象。
 // 「详情」按钮展开完整错误文本，默认只显示一行摘要。
 func readFailure(c *ui.Context, app *App, err error) {
+	// 「不支持」「超上限」与「读取失败」对用户是不同的结论：前者是
+	// 这个文件用了本阅读器不解码的过滤器，重试也没用；超上限需要
+	// 换一种读法；只有后者可能是局部损坏。
+	head := "该区域读取失败，单元格显示为不可用："
+	switch {
+	case errors.Is(err, hdf5.ErrUnsupported):
+		head = "该过滤器不受支持，无法解码："
+	case errors.Is(err, hdf5.ErrTooLarge):
+		head = "该区域一次读取的数据量超过上限，请改用分页或图像视图："
+	}
 	ui.Column(c).Gap(4).Padding(8, 12).Children(func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, "⚠").TextColor(c.Theme().TextMuted)
-			ui.Text(c, "该区域读取失败，单元格显示为不可用：").FontSize(12).
+			ui.Text(c, head).FontSize(12).
 				TextColor(c.Theme().TextMuted)
 			ui.Spacer(c).Grow(1)
 			label := "详情"
@@ -828,4 +864,13 @@ func enumName(dt hdf5.DatatypeInfo, v float64) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// tooLargeString 说明字符串/复合数据集为何不能整份展示。
+//
+// 解析库只提供整份读取，没有按行切片，所以这类数据集在超过上限时
+// 只能拒绝并告诉用户下一步能做什么（spec 的「超大切片请求被拒绝」）。
+func tooLargeString(total int) error {
+	return fmt.Errorf("%w：该数据集有 %d 个元素，超过字符串视图上限 %d；"+
+		"请改用元数据视图查看结构", hdf5.ErrTooLarge, total, stringElemLimit)
 }

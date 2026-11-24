@@ -747,6 +747,18 @@ func (d *Document) ReadSlice(node *Node, start, count []uint64) (*Slice, error) 
 	if err != nil {
 		return nil, classify(err)
 	}
+	// 标量（rank 0）没有可切片的维度：解析库的 ReadSlice 对空选择
+	// 返回空结果，所以这里改走整份读取，正好是那一个值。
+	if len(shape) == 0 {
+		vals, err := node.ds.Read()
+		if err != nil {
+			return nil, classify(err)
+		}
+		if uint64(len(vals)) > d.limit/8 {
+			return nil, fmt.Errorf("%w：标量读取超出上限 %d 字节", ErrTooLarge, d.limit)
+		}
+		return &Slice{Values: vals}, nil
+	}
 	if len(start) != len(shape) || len(count) != len(shape) {
 		return nil, fmt.Errorf("%w：请求 %d 维，数据集 %d 维", ErrOutOfBounds, len(start), len(shape))
 	}

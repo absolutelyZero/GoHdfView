@@ -55,20 +55,20 @@
 
 ## 7. 桌面外壳集成
 
-- [ ] 7.1 在 `main.go` 装配主窗口：`ui.Split` 左右分栏、右侧 `ui.Tabs` 三视图、底部状态栏（文件名、当前路径、元素总数）；验证：`ui.NewTester` 断言启动后出现空状态提示文本，打开夹具后状态栏含文件名。
-- [ ] 7.2 用 `mygo.Menu` 装配「文件/视图/帮助」菜单与 `Accelerator`（Ctrl+O、Ctrl+W、Ctrl+Shift+E），菜单项调用与视图相同的操作函数；验证：`go tool mygo build` 后手动点击三个菜单项各一次，确认行为与快捷键一致。
-- [ ] 7.3 用 `mygo.Dialog.Open` 实现文件选择对话框（过滤器 `.h5`、`.hdf5`、`.he5`、`.mat`）；验证：手动打开对话框确认过滤器生效，选中夹具后文件被加载。
-- [ ] 7.4 实现拖放打开与命令行参数打开（`os.Args[1]`）；验证：手动把 `.h5` 拖入窗口确认加载；以 `GoHdfView.exe testdata\compressed.h5` 启动确认直接打开。
-- [ ] 7.5 实现非模态错误提示：打开失败时保留当前文档，读取失败时保留视图并标注；验证：先打开有效夹具，再打开一个非 HDF5 文件，断言原文档仍可浏览且错误提示可关闭。
-- [ ] 7.6 实现关闭文件与退出时释放句柄；验证：打开文件后执行「关闭文件」再重新打开同名文件成功，退出应用后文件未被占用（可被重命名）。
+- [x] 7.1 在 `main.go` 装配主窗口：`ui.Split` 左右分栏、右侧 `ui.Tabs` 三视图、底部状态栏（文件名、当前路径、元素总数）；验证：`ui.NewTester` 断言启动后出现空状态提示文本，打开夹具后状态栏含文件名。
+- [x] 7.2 用 `mygo.Menu` 装配「文件/视图/帮助」菜单与 `Accelerator`（Ctrl+O、Ctrl+W、Ctrl+Shift+E），菜单项调用与视图相同的操作函数；验证：`go tool mygo build` 后手动点击三个菜单项各一次，确认行为与快捷键一致。
+- [x] 7.3 用 `mygo.Dialog.Open` 实现文件选择对话框（过滤器 `.h5`、`.hdf5`、`.he5`、`.mat`）；验证：手动打开对话框确认过滤器生效，选中夹具后文件被加载。
+- [x] 7.4 实现拖放打开与命令行参数打开（`os.Args[1]`）；验证：手动把 `.h5` 拖入窗口确认加载；以 `GoHdfView.exe testdata\compressed.h5` 启动确认直接打开。
+- [x] 7.5 实现非模态错误提示：打开失败时保留当前文档，读取失败时保留视图并标注；验证：先打开有效夹具，再打开一个非 HDF5 文件，断言原文档仍可浏览且错误提示可关闭。
+- [x] 7.6 实现关闭文件与退出时释放句柄；验证：打开文件后执行「关闭文件」再重新打开同名文件成功，退出应用后文件未被占用（可被重命名）。
 
 ## 8. 集成验收
 
-- [ ] 8.1 编写 `integration_test.go`：用 `ui.NewTester` 走完整路径——打开夹具 → 展开树 → 选中压缩数据集 → 断言元数据显示过滤器 → 切到数据视图断言首屏数值 → 切到属性视图断言属性；验证：`go test ./...` 全绿。
-- [ ] 8.2 在真实夹具集（含 C 库、h5py、MATLAB v7.3 各写一份）上手工走查五个能力的每个 scenario，记录结果到 `docs/verification.md`；验证：文档中每个 scenario 都有「通过/受库限制」的结论，受限制项与 design.md 的 Risks 对应。
-- [ ] 8.3 运行 `go tool mygo vet` 与 `go vet ./...`，修复所有 build 值误存与静态检查问题；验证：两条命令均无输出。
-- [ ] 8.4 构建发布产物并验证为纯 Go：`CGO_ENABLED=0 go tool mygo build` 后检查 `build/windows-amd64/GoHdfView.exe`，用 `dumpbin /dependents`（或 `go version -m`）确认未链接 HDF5 DLL 与 WebView2；验证：依赖列表中只有系统 DLL。
-- [ ] 8.5 在 README 补充功能说明、已知限制（SZIP/N-bit/Scale-offset 不支持、8 字节整数精度标注、硬链接环文件不支持、单文档）与截图；验证：README 的限制清单与 design.md 的 Risks 一一对应。
+- [x] 8.1 编写 `integration_test.go`：用 `ui.NewTester` 走完整路径——打开夹具 → 展开树 → 选中压缩数据集 → 断言元数据显示过滤器 → 切到数据视图断言首屏数值 → 切到属性视图断言属性；验证：`go test ./...` 全绿。
+- [x] 8.2 在真实夹具集（含 C 库、h5py、MATLAB v7.3 各写一份）上手工走查五个能力的每个 scenario，记录结果到 `docs/verification.md`；验证：文档中每个 scenario 都有「通过/受库限制」的结论，受限制项与 design.md 的 Risks 对应。
+- [x] 8.3 运行 `go tool mygo vet` 与 `go vet ./...`，修复所有 build 值误存与静态检查问题；验证：两条命令均无输出。
+- [x] 8.4 构建发布产物并验证为纯 Go：`CGO_ENABLED=0 go tool mygo build` 后检查 `build/windows-amd64/GoHdfView.exe`，用 `dumpbin /dependents`（或 `go version -m`）确认未链接 HDF5 DLL 与 WebView2；验证：依赖列表中只有系统 DLL。
+- [x] 8.5 在 README 补充功能说明、已知限制（SZIP/N-bit/Scale-offset 不支持、8 字节整数精度标注、硬链接环文件不支持、单文档）与截图；验证：README 的限制清单与 design.md 的 Risks 一一对应。
 
 ## Workflow follow-up
 

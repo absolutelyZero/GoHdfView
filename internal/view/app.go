@@ -138,6 +138,9 @@ type App struct {
 	curInfo *hdf5.DatasetInfo
 	// errDetail 控制错误详情是否展开（任务 5.6 的「详情入口」）。
 	errDetail bool
+	// cellDetail 是被选中单元格的完整文本。字符串数据集在单元格里
+	// 截断显示，点开后在这里看全文（spec 的「变长字符串数据集」）。
+	cellDetail string
 
 	// Image 是图像视图的状态。
 	Image ImageState
@@ -172,6 +175,7 @@ func (a *App) reset() {
 	a.tableErr = nil
 	a.curInfo = nil
 	a.errDetail = false
+	a.cellDetail = ""
 	a.Image = ImageState{}
 	a.gen = 0
 }
