@@ -233,12 +233,13 @@ func (n *Node) Children() ([]*Node, error) {
 		case *libhdf5.Dataset:
 			childPath := joinPath(n.Path, o.Name())
 			out = append(out, &Node{
-				ID:   NodeID{Address: o.Address(), Kind: KindDataset, Path: childPath},
-				Name: o.Name(),
-				Path: childPath,
-				Kind: KindDataset,
-				ds:   o,
-				doc:  n.doc,
+				ID:        NodeID{Address: o.Address(), Kind: KindDataset, Path: childPath},
+				Name:      o.Name(),
+				Path:      childPath,
+				Kind:      KindDataset,
+				ShapeText: shapeText(o),
+				ds:        o,
+				doc:       n.doc,
 			})
 		case *libhdf5.NamedDatatype:
 			childPath := joinPath(n.Path, o.Name())
@@ -253,6 +254,15 @@ func (n *Node) Children() ([]*Node, error) {
 		}
 	}
 	return out, nil
+}
+
+// shapeText 返回数据集维度概要的缓存值，读取失败时返回空字符串。
+func shapeText(ds *libhdf5.Dataset) string {
+	shape, err := ds.Shape()
+	if err != nil {
+		return ""
+	}
+	return FormatShape(shape)
 }
 
 // joinPath 拼接父子路径；父为根（"/"）时不产生双斜杠。

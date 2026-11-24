@@ -4,29 +4,29 @@
 
 - [x] 1.1 用 `go tool mygo init -template native` 生成原生 UI 骨架（`main.go`、`mygo.json`、`resources/icon.png`、`main_test.go`），把模块名改为 `gohdfview`；验证：`go build ./...` 通过，`go tool mygo build` 产出 `build/windows-amd64/GoHdfView.exe` 且双击可显示空窗口。
 - [x] 1.2 在 `go.mod` 中固定 `go 1.27.3` 与 `toolchain go1.27.3`，加入 `github.com/egoist/mygo v0.10.0` 与 `github.com/scigolib/hdf5 v0.15.0`；验证：`go mod tidy` 无变更，`go list -m all` 显示两个依赖的固定版本，`CGO_ENABLED=0 go build ./...` 成功。
-- [ ] 1.3 在 `README.md` 记录构建前提（Go 1.27+ 或 `GOTOOLCHAIN=auto`、`GOMODCACHE` 可写目录、`CGO_ENABLED=0`）与 `go tool mygo dev` / `go tool mygo build` 的用法；验证：按 README 命令从干净 shell 复现构建成功。
-- [ ] 1.4 加入 `.gitignore`（`build/`、`.probe/`）并初始化 git 仓库，做首次提交；验证：`git status` 干净，`git ls-files` 不含 `build/` 与 `.probe/`。
+- [x] 1.3 在 `README.md` 记录构建前提（Go 1.27+ 或 `GOTOOLCHAIN=auto`、`GOMODCACHE` 可写目录、`CGO_ENABLED=0`）与 `go tool mygo dev` / `go tool mygo build` 的用法；验证：按 README 命令从干净 shell 复现构建成功。
+- [x] 1.4 加入 `.gitignore`（`build/`、`.probe/`）并初始化 git 仓库，做首次提交；验证：`git status` 干净，`git ls-files` 不含 `build/` 与 `.probe/`。
 
 ## 2. 只读文件访问层（`internal/hdf5`）
 
-- [ ] 2.1 定义值类型对象模型：`NodeID`（对象地址 + 类型标记）、`NodeKind`（组/数据集/命名类型/软链接/外部链接）、`Node`、`DatasetInfo`（秩、维度、最大维度、元素数、`DatatypeInfo`、`LayoutInfo`、过滤器列表）、`AttributeInfo`；验证：`go vet ./internal/hdf5` 通过，包内为每个类型写 doc 注释。
-- [ ] 2.2 实现 `Open(path string) (*Document, error)` 与 `(*Document).Close()`，内部调用 `hdf5.Open` 并把库错误经 `errors.Is` 归入 `ErrNotHDF5` / `ErrCorrupt` / `ErrUnsupported` / `ErrTooLarge` 四类哨兵；验证：单元测试用「非 HDF5 字节流」「截断的 HDF5 文件」「不存在的路径」三个夹具断言分类正确，且 `Close` 可重复调用不 panic。
-- [ ] 2.3 实现 `(*Document).Root() *Node` 与 `(*Node).Children() ([]*Node, error)`，把 `*Group`/`*Dataset` 转成本层 `Node`，软链接在加载阶段已被库跳过则显式标注为不可展开；验证：对测试文件断言根组子节点数量与名称，且软链接不出现在 `Children()` 中（或在结果中标记为链接类型）。
-- [ ] 2.4 实现 `(*Node).Info() (*DatasetInfo, error)`，把 `Shape`、`MaxShape`、`Datatype`、`Layout` 的结果转成本层结构，`MaxShape` 中 `hdf5.Unlimited` 转为 `nil` 表示无限；验证：对 1D/2D/标量三个数据集断言秩、维度、元素数与无限维度表示。
-- [ ] 2.5 实现 `(*Node).Attributes() ([]AttributeInfo, error)`，把 `*core.Attribute` 的 datatype 与值转成可展示的类型名与字符串/数值表示，覆盖字符串、数值标量、数值数组三种形态；验证：对带 `units`（字符串）与 `scale_factor`（数值）属性的测试文件断言名称、类型与值。
-- [ ] 2.6 实现 `(*Document).ReadSlice(node *Node, start, count []uint64) (Slice, error)`，返回 `Slice`（含 `Values []float64`、`Shape []uint64`、`Truncated bool`），越界返回 `ErrOutOfBounds`，超出 `SetReadLimit` 的请求返回 `ErrTooLarge`；验证：单元测试断言正常切片的值与顺序、越界请求被拒绝、超过上限的请求被拒绝。
-- [ ] 2.7 实现 `(*Document).ReadStrings`、`(*Document).ReadCompound` 与枚举成员映射的封装，把 `ReadStrings`/`ReadCompound` 的结果转成本层可展示结构；验证：对字符串、复合、枚举三个测试数据集断言取值与成员名。
-- [ ] 2.8 编写测试夹具生成脚本 `internal/hdf5/testdata/gen.go`（`//go:build ignore`），用库的写入 API 一次性生成 `.h5` 夹具（含 deflate+shuffle 压缩数据集、分块数据集、软链接、属性、字符串、复合、枚举、标量、3D 数组），脚本产物提交到 `testdata/`；验证：脚本运行一次后 `testdata/` 出现全部夹具文件，且 `h5dump` 或库自身能重新打开它们。
-- [ ] 2.9 加入只读约束的自动化断言：测试扫描 `internal/`、`main.go`，断言源码中不出现 `CreateForWrite`、`OpenForWrite`、`WriteDataset`、`WriteAttribute` 等写入标识符；验证：故意加入一处 `hdf5.CreateForWrite` 调用时该测试失败，移除后通过。
+- [x] 2.1 定义值类型对象模型：`NodeID`（对象地址 + 类型标记）、`NodeKind`（组/数据集/命名类型/软链接/外部链接）、`Node`、`DatasetInfo`（秩、维度、最大维度、元素数、`DatatypeInfo`、`LayoutInfo`、过滤器列表）、`AttributeInfo`；验证：`go vet ./internal/hdf5` 通过，包内为每个类型写 doc 注释。
+- [x] 2.2 实现 `Open(path string) (*Document, error)` 与 `(*Document).Close()`，内部调用 `hdf5.Open` 并把库错误经 `errors.Is` 归入 `ErrNotHDF5` / `ErrCorrupt` / `ErrUnsupported` / `ErrTooLarge` 四类哨兵；验证：单元测试用「非 HDF5 字节流」「截断的 HDF5 文件」「不存在的路径」三个夹具断言分类正确，且 `Close` 可重复调用不 panic。
+- [x] 2.3 实现 `(*Document).Root() *Node` 与 `(*Node).Children() ([]*Node, error)`，把 `*Group`/`*Dataset` 转成本层 `Node`，软链接在加载阶段已被库跳过则显式标注为不可展开；验证：对测试文件断言根组子节点数量与名称，且软链接不出现在 `Children()` 中（或在结果中标记为链接类型）。
+- [x] 2.4 实现 `(*Node).Info() (*DatasetInfo, error)`，把 `Shape`、`MaxShape`、`Datatype`、`Layout` 的结果转成本层结构，`MaxShape` 中 `hdf5.Unlimited` 转为 `nil` 表示无限；验证：对 1D/2D/标量三个数据集断言秩、维度、元素数与无限维度表示。
+- [x] 2.5 实现 `(*Node).Attributes() ([]AttributeInfo, error)`，把 `*core.Attribute` 的 datatype 与值转成可展示的类型名与字符串/数值表示，覆盖字符串、数值标量、数值数组三种形态；验证：对带 `units`（字符串）与 `scale_factor`（数值）属性的测试文件断言名称、类型与值。
+- [x] 2.6 实现 `(*Document).ReadSlice(node *Node, start, count []uint64) (Slice, error)`，返回 `Slice`（含 `Values []float64`、`Shape []uint64`、`Truncated bool`），越界返回 `ErrOutOfBounds`，超出 `SetReadLimit` 的请求返回 `ErrTooLarge`；验证：单元测试断言正常切片的值与顺序、越界请求被拒绝、超过上限的请求被拒绝。
+- [x] 2.7 实现 `(*Document).ReadStrings`、`(*Document).ReadCompound` 与枚举成员映射的封装，把 `ReadStrings`/`ReadCompound` 的结果转成本层可展示结构；验证：对字符串、复合、枚举三个测试数据集断言取值与成员名。
+- [x] 2.8 编写测试夹具生成脚本 `internal/hdf5/testdata/gen.go`（`//go:build ignore`），用库的写入 API 一次性生成 `.h5` 夹具（含 deflate+shuffle 压缩数据集、分块数据集、软链接、属性、字符串、复合、枚举、标量、3D 数组），脚本产物提交到 `testdata/`；验证：脚本运行一次后 `testdata/` 出现全部夹具文件，且 `h5dump` 或库自身能重新打开它们。
+- [x] 2.9 加入只读约束的自动化断言：测试扫描 `internal/`、`main.go`，断言源码中不出现 `CreateForWrite`、`OpenForWrite`、`WriteDataset`、`WriteAttribute` 等写入标识符；验证：故意加入一处 `hdf5.CreateForWrite` 调用时该测试失败，移除后通过。
 
 ## 3. 对象树与选中状态
 
-- [ ] 3.1 在 `internal/view/tree.go` 实现 `Tree(c *ui.Context, app *App)`，用 `ui.Outline[NodeID]` 展示根节点与按需加载的子节点，节点标签附类型图标与数据集维度概要（如 `[100×50]`）；验证：`ui.NewTester` 断言打开夹具后可见根节点名与一个数据集的 `[100×50]` 标签。
-- [ ] 3.2 在 `App` 中实现展开状态（`ui.OutlineState[NodeID]` 的 `Open`）与选中状态（`Selected *NodeID`），并让 `OutlineState.Generation` 在打开/关闭文件时自增；验证：测试展开一个组、选中同层另一个数据集后，断言该组仍处于展开状态。
-- [ ] 3.3 实现「全部展开」「全部折叠」操作，遍历当前已加载节点写入 `Open` 集合并自增 `Generation`；验证：测试调用两个操作后断言可见行数与根节点仍可见。
-- [ ] 3.4 在 `internal/view/breadcrumb.go` 实现当前对象完整路径的分段展示，点击某段时展开并选中对应祖先；验证：测试选中 `/results/run-3/temperature` 后断言界面包含三段文本，点击 `/results` 后断言选中项变为该组。
-- [ ] 3.5 实现键盘上下方向键在同层可见节点间移动选中项；验证：测试按 `Key` 模拟方向键后断言选中项与右侧视图同步变化。
-- [ ] 3.6 为含一万个成员的组加入性能守卫测试：构造一个 10000 成员的假 `Node` 树，断言 `Tree` 构建一次只访问可见行（用计数回调断言 `Children` 调用次数为常数级）；验证：`go test -run TestTreeLargeGroup` 通过且不超时。
+- [x] 3.1 在 `internal/view/tree.go` 实现 `Tree(c *ui.Context, app *App)`，用 `ui.Outline[NodeID]` 展示根节点与按需加载的子节点，节点标签附类型图标与数据集维度概要（如 `[100×50]`）；验证：`ui.NewTester` 断言打开夹具后可见根节点名与一个数据集的 `[100×50]` 标签。
+- [x] 3.2 在 `App` 中实现展开状态（`ui.OutlineState[NodeID]` 的 `Open`）与选中状态（`Selected *NodeID`），并让 `OutlineState.Generation` 在打开/关闭文件时自增；验证：测试展开一个组、选中同层另一个数据集后，断言该组仍处于展开状态。
+- [x] 3.3 实现「全部展开」「全部折叠」操作，遍历当前已加载节点写入 `Open` 集合并自增 `Generation`；验证：测试调用两个操作后断言可见行数与根节点仍可见。
+- [x] 3.4 在 `internal/view/breadcrumb.go` 实现当前对象完整路径的分段展示，点击某段时展开并选中对应祖先；验证：测试选中 `/results/run-3/temperature` 后断言界面包含三段文本，点击 `/results` 后断言选中项变为该组。
+- [x] 3.5 实现键盘上下方向键在同层可见节点间移动选中项；验证：测试按 `Key` 模拟方向键后断言选中项与右侧视图同步变化。
+- [x] 3.6 为含一万个成员的组加入性能守卫测试：构造一个 10000 成员的假 `Node` 树，断言 `Tree` 构建一次只访问可见行（用计数回调断言 `Children` 调用次数为常数级）；验证：`go test -run TestTreeLargeGroup` 通过且不超时。
 
 ## 4. 元数据与属性视图
 

@@ -59,6 +59,11 @@ type Node struct {
 	Kind     NodeKind
 	LinkInfo string // 软链接/外部链接的目标描述；其它种类为空
 
+	// ShapeText 是维度概要的缓存，例如 "[100×50]"。
+	// 它在节点构造时算好：树每帧都会为可见行取这个字符串，
+	// 而 Shape 每次调用都要重新解码数据集描述符。
+	ShapeText string
+
 	group *libhdf5.Group
 	ds    *libhdf5.Dataset
 	typ   *libhdf5.NamedDatatype
@@ -73,7 +78,12 @@ func (n *Node) IsContainer() bool {
 
 // DimensionSummary 返回对象树标签用的维度概要，例如 "[100×50]"。
 // 非数据集、或读取维度失败时返回空字符串。
+//
+// 结果在节点构造时缓存到 ShapeText，避免每帧重复解码描述符。
 func (n *Node) DimensionSummary() string {
+	if n.ShapeText != "" {
+		return n.ShapeText
+	}
 	if n.Kind != KindDataset || n.ds == nil {
 		return ""
 	}
@@ -81,7 +91,8 @@ func (n *Node) DimensionSummary() string {
 	if err != nil {
 		return ""
 	}
-	return FormatShape(shape)
+	n.ShapeText = FormatShape(shape)
+	return n.ShapeText
 }
 
 // FormatShape 把维度切片格式化为 "[100×50]"，标量（rank 0）返回 "[标量]"。
@@ -93,7 +104,7 @@ func FormatShape(shape []uint64) string {
 	b.WriteByte('[')
 	for i, d := range shape {
 		if i > 0 {
-			b.WriteByte('×')
+			b.WriteString("×")
 		}
 		b.WriteString(formatUint(d))
 	}
