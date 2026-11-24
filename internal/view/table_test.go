@@ -33,8 +33,9 @@ type fakeReader struct {
 }
 
 type sliceCall struct {
-	Start []uint64
-	Count []uint64
+	Start  []uint64
+	Count  []uint64
+	Stride []uint64
 }
 
 func (f *fakeReader) ReadSlice(node *hdf5.Node, start, count []uint64) (*hdf5.Slice, error) {
@@ -87,6 +88,39 @@ func (f *fakeReader) ReadStrings(node *hdf5.Node) (*hdf5.Strings, error) {
 		return nil, f.err
 	}
 	return &hdf5.Strings{Values: f.strs}, nil
+}
+
+func (f *fakeReader) ReadStrided(node *hdf5.Node, rowStart, colStart, rowCount, colCount, rowStride, colStride uint64) (*hdf5.Slice, error) {
+	f.mu.Lock()
+	f.readNo++
+	f.slices = append(f.slices, sliceCall{
+		Start:  []uint64{rowStart, colStart},
+		Count:  []uint64{rowCount, colCount},
+		Stride: []uint64{rowStride, colStride},
+	})
+	err := f.err
+	rows, cols := f.rows, f.cols
+	value := f.value
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	vals := make([]float64, int(rowCount*colCount))
+	for i := range vals {
+		if value != nil {
+			vals[i] = value([]uint64{rowStart, colStart}, i)
+			continue
+		}
+		r := int(rowStart) + (i/int(colCount))*int(rowStride)
+		c := int(colStart) + (i%int(colCount))*int(colStride)
+		vals[i] = float64(r) + float64(c)/100
+	}
+	return &hdf5.Slice{
+		Start:  []uint64{rowStart, colStart},
+		Count:  []uint64{rowCount, colCount},
+		Shape:  []uint64{uint64(rows), uint64(cols)},
+		Values: vals,
+	}, nil
 }
 
 func (f *fakeReader) ReadCompound(node *hdf5.Node) (*hdf5.Compound, error) {

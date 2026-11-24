@@ -805,3 +805,46 @@ func toFloat(v any) float64 {
 	}
 	return -1
 }
+
+// TestReadStrided 验证步长读取：只解码抽取到的像素（任务 6.4）。
+func TestReadStrided(t *testing.T) {
+	doc := openFixture(t, "basic.h5")
+	node, err := doc.NodeByPath("/matrix")
+	if err != nil {
+		t.Fatalf("NodeByPath: %v", err)
+	}
+
+	// 取 10 行 × 5 列，行步长 10、列步长 10。
+	sl, err := doc.ReadStrided(node, 0, 0, 10, 5, 10, 10)
+	if err != nil {
+		t.Fatalf("ReadStrided: %v", err)
+	}
+	if got := len(sl.Values); got != 50 {
+		t.Fatalf("应返回 50 个值，实际 %d", got)
+	}
+	// 夹具值 = 行 + 列/100：第一个像素 (0,0)=0，第二个 (0,10)=0.1。
+	if sl.Values[0] != 0 {
+		t.Fatalf("首个像素应为 0，实际 %v", sl.Values[0])
+	}
+	if math.Abs(sl.Values[1]-0.1) > 1e-9 {
+		t.Fatalf("第二像素应为 0.1，实际 %v", sl.Values[1])
+	}
+	// 第二行第一列应是第 10 行：(10,0)=10。
+	if sl.Values[5] != 10 {
+		t.Fatalf("第二行首像素应为 10，实际 %v", sl.Values[5])
+	}
+
+	// 越界应报 ErrOutOfBounds。
+	if _, err := doc.ReadStrided(node, 95, 0, 10, 5, 10, 10); !errors.Is(err, ErrOutOfBounds) {
+		t.Fatalf("越界应报 ErrOutOfBounds，实际 %v", err)
+	}
+	// 三维数据集应被拒绝（/cube 在 scalar.h5 里）。
+	doc3 := openFixture(t, "scalar.h5")
+	cube, err := doc3.NodeByPath("/cube")
+	if err != nil {
+		t.Fatalf("NodeByPath: %v", err)
+	}
+	if _, err := doc3.ReadStrided(cube, 0, 0, 1, 1, 1, 1); !errors.Is(err, ErrOutOfBounds) {
+		t.Fatalf("三维数据集应报 ErrOutOfBounds，实际 %v", err)
+	}
+}

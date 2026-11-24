@@ -29,6 +29,7 @@ type Reader interface {
 	ReadSlice(node *hdf5.Node, start, count []uint64) (*hdf5.Slice, error)
 	ReadStrings(node *hdf5.Node) (*hdf5.Strings, error)
 	ReadCompound(node *hdf5.Node) (*hdf5.Compound, error)
+	ReadStrided(node *hdf5.Node, rowStart, colStart, rowCount, colCount, rowStride, colStride uint64) (*hdf5.Slice, error)
 }
 
 // Meta 是数据集描述（维度、类型、布局）的来源。
@@ -137,6 +138,9 @@ type App struct {
 	curInfo *hdf5.DatasetInfo
 	// errDetail 控制错误详情是否展开（任务 5.6 的「详情入口」）。
 	errDetail bool
+
+	// Image 是图像视图的状态。
+	Image ImageState
 }
 
 // NewApp 创建空状态的应用。
@@ -168,6 +172,7 @@ func (a *App) reset() {
 	a.tableErr = nil
 	a.curInfo = nil
 	a.errDetail = false
+	a.Image = ImageState{}
 	a.gen = 0
 }
 
@@ -192,6 +197,7 @@ func (a *App) SetSource(src Source) error {
 	a.Selected = &root.ID
 	a.Current = root
 	a.resetTable()
+	a.resetImage()
 	return nil
 }
 
@@ -328,6 +334,7 @@ func (a *App) syncRow() {
 	if prev == nil || prev.ID != n.ID {
 		// 换对象：清空表格缓存与分页，避免显示上一个数据集的数据。
 		a.resetTable()
+		a.resetImage()
 	}
 }
 
@@ -347,6 +354,7 @@ func (a *App) Select(id hdf5.NodeID) {
 	a.Current = n
 	if prev == nil || prev.ID != n.ID {
 		a.resetTable()
+		a.resetImage()
 	}
 	a.pending = &n.ID
 }

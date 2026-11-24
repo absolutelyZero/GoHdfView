@@ -661,6 +661,72 @@ func formatFloat(f float64) string {
 	return strconv.FormatFloat(f, 'g', -1, 64)
 }
 
+// ReadStrided 按步长抽取读取一个二维区域。
+//
+// 它用于图像视图的降采样：只解码目标像素，而不是把整个区域读进来再抽样。
+// 解析库的 HyperslabSelection 支持 Stride，但只在 Count×Block 不重叠时可用，
+// 这里把每个像素当作一个 1×1 块，Stride 即抽取间隔，因此读取量 = 像素数。
+// 返回值是展平的 float64 序列，按行优先排列。
+func (d *Document) ReadStrided(node *Node, rowStart, colStart, rowCount, colCount, rowStride, colStride uint64) (*Slice, error) {
+	if node == nil || node.Kind != KindDataset || node.ds == nil {
+		return nil, ErrNotDataset
+	}
+	if rowCount == 0 || colCount == 0 {
+		return &Slice{Values: []float64{}}, nil
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return nil, ErrClosed
+	}
+
+	shape, err := node.ds.Shape()
+	if err != nil {
+		return nil, classify(err)
+	}
+	if len(shape) != 2 {
+		return nil, fmt.Errorf("%w：步长读取只支持二维，数据集 %d 维", ErrOutOfBounds, len(shape))
+	}
+	if rowStride == 0 {
+		rowStride = 1
+	}
+	if colStride == 0 {
+		colStride = 1
+	}
+	// 最后一个像素必须落在数据集内。
+	if rowStart+(rowCount-1)*rowStride >= shape[0] || colStart+(colCount-1)*colStride >= shape[1] {
+		return nil, fmt.Errorf("%w：步长读取范围超出数据集", ErrOutOfBounds)
+	}
+
+	want, overflow := elemCount([]uint64{rowCount, colCount})
+	if overflow || want > d.limit/8 {
+		return nil, fmt.Errorf("%w：请求 %d 个元素（%d 字节），上限 %d 字节",
+			ErrTooLarge, want, want*8, d.limit)
+	}
+
+	sel := &libhdf5.HyperslabSelection{
+		Start:  []uint64{rowStart, colStart},
+		Count:  []uint64{rowCount, colCount},
+		Stride: []uint64{rowStride, colStride},
+		Block:  []uint64{1, 1},
+	}
+	raw, err := node.ds.ReadHyperslab(sel)
+	if err != nil {
+		return nil, classify(err)
+	}
+	vals, ok := toFloat64Slice(raw)
+	if !ok {
+		return nil, fmt.Errorf("%w：解析库返回了非数值结果 %T", ErrUnsupported, raw)
+	}
+	return &Slice{
+		Start:  []uint64{rowStart, colStart},
+		Count:  []uint64{rowCount, colCount},
+		Shape:  shape,
+		Values: vals,
+	}, nil
+}
+
 // ReadSlice 读取一个矩形切片。
 //
 // 返回值始终是展平的 float64 序列（解析库内部统一转换）。
