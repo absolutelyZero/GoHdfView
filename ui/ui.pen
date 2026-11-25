@@ -6766,91 +6766,320 @@
                       "alignItems": "center",
                       "children": [
                         {
-                          "type": "text",
-                          "id": "DWyGL",
-                          "name": "Page Info",
-                          "fill": "#6E767D",
-                          "content": "第 1 / 1 页 · 共 100 行 · 50 列",
-                          "fontFamily": "Inter",
-                          "fontSize": 11.5,
-                          "fontWeight": "normal"
-                        },
-                        {
                           "type": "frame",
-                          "id": "j60Z0o",
-                          "name": "Spacer",
-                          "width": "fill_container",
-                          "height": 1
-                        },
-                        {
-                          "type": "frame",
-                          "id": "ZCbIU",
-                          "name": "Prev",
-                          "cornerRadius": 4,
-                          "stroke": "#1E2226",
-                          "strokeWidth": 1,
-                          "gap": 5,
-                          "padding": [
-                            5,
-                            9
-                          ],
+                          "id": "FtRowPager",
+                          "name": "Row Pager",
+                          "gap": 6,
                           "alignItems": "center",
                           "children": [
                             {
-                              "type": "icon",
-                              "id": "HmDUx",
-                              "name": "Prev Icon",
-                              "width": 12,
-                              "height": 12,
-                              "icon": "chevron-left",
-                              "library": "lucide",
-                              "fill": "#4E565E"
+                              "type": "text",
+                              "id": "FtRowAxis",
+                              "name": "Row Axis Label",
+                              "fill": "#4A5158",
+                              "content": "行",
+                              "fontFamily": "JetBrains Mono",
+                              "fontSize": 10.5,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "frame",
+                              "id": "FtRowPrev",
+                              "name": "Row Prev",
+                              "width": 26,
+                              "height": 24,
+                              "cornerRadius": 4,
+                              "stroke": "#1E2226",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "FtRowPrevIcon",
+                                  "name": "Row Prev Icon",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "chevron-up",
+                                  "library": "lucide",
+                                  "fill": "#4E565E"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "FtRowNext",
+                              "name": "Row Next",
+                              "width": 26,
+                              "height": 24,
+                              "cornerRadius": 4,
+                              "stroke": "#1E2226",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "FtRowNextIcon",
+                                  "name": "Row Next Icon",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "chevron-down",
+                                  "library": "lucide",
+                                  "fill": "#B9C0C7"
+                                }
+                              ]
                             },
                             {
                               "type": "text",
-                              "id": "JrhPY",
-                              "name": "Prev Text",
-                              "fill": "#4E565E",
-                              "content": "上一页",
-                              "fontFamily": "Inter",
-                              "fontSize": 11.5,
+                              "id": "FtRowRange",
+                              "name": "Row Range",
+                              "fill": "#6E767D",
+                              "content": "0–21 / 100",
+                              "fontFamily": "JetBrains Mono",
+                              "fontSize": 11,
                               "fontWeight": "normal"
                             }
                           ]
                         },
                         {
                           "type": "frame",
-                          "id": "z7Wgt",
-                          "name": "Next",
-                          "cornerRadius": 4,
-                          "stroke": "#1E2226",
-                          "strokeWidth": 1,
-                          "gap": 5,
-                          "padding": [
-                            5,
-                            9
-                          ],
+                          "id": "FtSpacerA",
+                          "name": "Spacer",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "FtQuickLocate",
+                          "name": "Quick Locate",
+                          "gap": 6,
                           "alignItems": "center",
                           "children": [
                             {
+                              "type": "icon",
+                              "id": "FtLocateIcon",
+                              "name": "Locate Icon",
+                              "width": 12,
+                              "height": 12,
+                              "icon": "crosshair",
+                              "library": "lucide",
+                              "fill": "$a-accent"
+                            },
+                            {
                               "type": "text",
-                              "id": "XmjLe",
-                              "name": "Next Text",
-                              "fill": "#B9C0C7",
-                              "content": "下一页",
+                              "id": "FtLocateLabel",
+                              "name": "Locate Label",
+                              "fill": "$a-dim",
+                              "content": "定位",
                               "fontFamily": "Inter",
                               "fontSize": 11.5,
                               "fontWeight": "normal"
                             },
                             {
-                              "type": "icon",
-                              "id": "F3zZQc",
-                              "name": "Next Icon",
-                              "width": 12,
-                              "height": 12,
-                              "icon": "chevron-right",
-                              "library": "lucide",
-                              "fill": "#B9C0C7"
+                              "type": "frame",
+                              "id": "FtRankBadge",
+                              "name": "Rank Badge",
+                              "fill": "#151A1E",
+                              "cornerRadius": 3,
+                              "stroke": "#232A2F",
+                              "strokeWidth": 1,
+                              "padding": [
+                                2,
+                                5
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "FtRankText",
+                                  "name": "Rank Text",
+                                  "fill": "$a-mute",
+                                  "content": "2D",
+                                  "fontFamily": "JetBrains Mono",
+                                  "fontSize": 9.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "FtD0Label",
+                              "name": "D0 Label",
+                              "fill": "#4A5158",
+                              "content": "D0",
+                              "fontFamily": "JetBrains Mono",
+                              "fontSize": 10,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "frame",
+                              "id": "FtD0Input",
+                              "name": "D0 Input",
+                              "width": 46,
+                              "height": 24,
+                              "fill": "#0B0E10",
+                              "cornerRadius": 3,
+                              "stroke": "#1E2226",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "FtD0Value",
+                                  "name": "D0 Value",
+                                  "fill": "$a-text",
+                                  "content": "0",
+                                  "fontFamily": "JetBrains Mono",
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "FtD1Label",
+                              "name": "D1 Label",
+                              "fill": "#4A5158",
+                              "content": "D1",
+                              "fontFamily": "JetBrains Mono",
+                              "fontSize": 10,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "frame",
+                              "id": "FtD1Input",
+                              "name": "D1 Input",
+                              "width": 46,
+                              "height": 24,
+                              "fill": "#0B0E10",
+                              "cornerRadius": 3,
+                              "stroke": "#1E2226",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "FtD1Value",
+                                  "name": "D1 Value",
+                                  "fill": "$a-text",
+                                  "content": "0",
+                                  "fontFamily": "JetBrains Mono",
+                                  "fontSize": 11,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "FtGoBtn",
+                              "name": "Go Button",
+                              "cornerRadius": 4,
+                              "stroke": "$a-accent",
+                              "strokeWidth": 1,
+                              "padding": [
+                                4,
+                                9
+                              ],
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "text",
+                                  "id": "FtGoText",
+                                  "name": "Go Text",
+                                  "fill": "$a-accent",
+                                  "content": "跳至",
+                                  "fontFamily": "Inter",
+                                  "fontSize": 11.5,
+                                  "fontWeight": "normal"
+                                }
+                              ]
+                            }
+                          ]
+                        },
+                        {
+                          "type": "frame",
+                          "id": "FtSpacerB",
+                          "name": "Spacer",
+                          "width": "fill_container",
+                          "height": 1
+                        },
+                        {
+                          "type": "frame",
+                          "id": "FtColPager",
+                          "name": "Col Pager",
+                          "gap": 6,
+                          "alignItems": "center",
+                          "children": [
+                            {
+                              "type": "text",
+                              "id": "FtColRange",
+                              "name": "Col Range",
+                              "fill": "#6E767D",
+                              "content": "0–6 / 50",
+                              "fontFamily": "JetBrains Mono",
+                              "fontSize": 11,
+                              "fontWeight": "normal"
+                            },
+                            {
+                              "type": "frame",
+                              "id": "FtColPrev",
+                              "name": "Col Prev",
+                              "width": 26,
+                              "height": 24,
+                              "cornerRadius": 4,
+                              "stroke": "#1E2226",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "FtColPrevIcon",
+                                  "name": "Col Prev Icon",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "chevron-left",
+                                  "library": "lucide",
+                                  "fill": "#4E565E"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "frame",
+                              "id": "FtColNext",
+                              "name": "Col Next",
+                              "width": 26,
+                              "height": 24,
+                              "cornerRadius": 4,
+                              "stroke": "#1E2226",
+                              "strokeWidth": 1,
+                              "justifyContent": "center",
+                              "alignItems": "center",
+                              "children": [
+                                {
+                                  "type": "icon",
+                                  "id": "FtColNextIcon",
+                                  "name": "Col Next Icon",
+                                  "width": 12,
+                                  "height": 12,
+                                  "icon": "chevron-right",
+                                  "library": "lucide",
+                                  "fill": "#B9C0C7"
+                                }
+                              ]
+                            },
+                            {
+                              "type": "text",
+                              "id": "FtColAxis",
+                              "name": "Col Axis Label",
+                              "fill": "#4A5158",
+                              "content": "列",
+                              "fontFamily": "JetBrains Mono",
+                              "fontSize": 10.5,
+                              "fontWeight": "normal"
                             }
                           ]
                         }

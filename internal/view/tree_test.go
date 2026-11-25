@@ -2,6 +2,7 @@ package view
 
 import (
 	"fmt"
+	"runtime"
 	"testing"
 
 	"github.com/egoist/mygo/ui"
@@ -87,6 +88,66 @@ func newTester(t *testing.T, src *fakeSource) (*App, *ui.Tester) {
 		t.Fatalf("SetSource: %v", err)
 	}
 	return app, ui.NewTester(testView(app), 900, 600)
+}
+
+// TestTreeRowHeight 断言树行高 26px，与设计稿一致。
+func TestTreeRowHeight(t *testing.T) {
+	treeFilter, treeApplied = "", ""
+	src := newFake()
+	grp := src.addGroup(src.root, "grp")
+	src.addDataset(src.root, "top")
+	src.addDataset(grp, "deep")
+	app, tt := newTester(t, src)
+	app.Tree.Open.Add(grp.ID)
+	app.Tree.Generation++
+	tt.Frame()
+
+	grpRect, ok := tt.Find("grp")
+	if !ok {
+		t.Fatalf("缺少组节点，texts %q", tt.Texts())
+	}
+	deep, ok := tt.Find("deep")
+	if !ok {
+		t.Fatalf("缺少第二层节点，texts %q", tt.Texts())
+	}
+	top, ok := tt.Find("top")
+	if !ok {
+		t.Fatalf("缺少第一层节点，texts %q", tt.Texts())
+	}
+	if d := deep.Y - grpRect.Y; d < 25 || d > 27 {
+		t.Fatalf("行高应为 26px，实际 %.1f", d)
+	}
+	if d := top.Y - deep.Y; d < 25 || d > 27 {
+		t.Fatalf("行高应为 26px，实际 %.1f", d)
+	}
+}
+
+// TestTreeSearchShortcut 断言 Ctrl/Cmd+K 聚焦筛选框并生效。
+func TestTreeSearchShortcut(t *testing.T) {
+	treeFilter, treeApplied = "", ""
+	defer func() { treeFilter, treeApplied = "", "" }()
+
+	src := newFake()
+	src.addDataset(src.root, "matrix")
+	src.addDataset(src.root, "spectrum")
+	_, tt := newTester(t, src)
+	tt.Frame()
+
+	mod := ui.Ctrl
+	if runtime.GOOS == "darwin" {
+		mod = ui.Cmd
+	}
+	tt.Key(mod, ui.KeyK)
+	tt.Frame()
+	tt.Type("matrix")
+	tt.Frame()
+
+	if !tt.HasText("matrix") {
+		t.Fatalf("筛选后应保留 matrix，实际 %q", tt.Texts())
+	}
+	if tt.HasText("spectrum") {
+		t.Fatalf("筛选后不应显示 spectrum，实际 %q", tt.Texts())
+	}
 }
 
 // TestTreeShowsRootAndChildren 对应任务 3.1：打开夹具后可见根节点与子节点。

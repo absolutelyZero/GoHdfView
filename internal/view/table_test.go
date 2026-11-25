@@ -217,7 +217,7 @@ func TestTableFirstPage(t *testing.T) {
 	if !tt.HasText("0.01") {
 		t.Fatalf("应显示首个数据行的第二个值 0.01，实际 %q", tt.Texts())
 	}
-	if !tt.HasText("第 1 / 1 页（共 100 行）") {
+	if !tt.HasText("行 0–99 / 100") {
 		t.Fatalf("页信息不正确，实际 %q", tt.Texts())
 	}
 }
@@ -237,8 +237,8 @@ func TestTablePaging(t *testing.T) {
 		t.Fatalf("首屏请求应为 start=[0 0] count=[100 50]，实际 %v %v", first.Start, first.Count)
 	}
 
-	if err := tt.Click("下一页"); err != nil {
-		t.Fatalf("Click 下一页: %v", err)
+	if err := tt.Click("下一屏"); err != nil {
+		t.Fatalf("Click 下一屏: %v", err)
 	}
 	tt.Frame()
 
@@ -250,16 +250,16 @@ func TestTablePaging(t *testing.T) {
 		t.Fatalf("第二页请求应为 start=[100 0] count=[100 50]，实际 %v %v", second.Start, second.Count)
 	}
 	// 第二页首行应是第 100 行，值 100。
-	if !tt.HasText("第 2 / 10 页（共 1000 行）") {
+	if !tt.HasText("行 100–199 / 1000") {
 		t.Fatalf("页信息应更新，实际 %q", tt.Texts())
 	}
 	if !tt.HasText("100") {
 		t.Fatalf("第二页应显示行号 100，实际 %q", tt.Texts())
 	}
 
-	// 翻回上一页不应重复读取（同一页命中缓存）。
-	if err := tt.Click("上一页"); err != nil {
-		t.Fatalf("Click 上一页: %v", err)
+	// 翻回上一屏不应重复读取（同一页命中缓存）。
+	if err := tt.Click("上一屏"); err != nil {
+		t.Fatalf("Click 上一屏: %v", err)
 	}
 	tt.Frame()
 	if len(rd.slices) != 2 {
@@ -283,7 +283,7 @@ func TestTableRank1(t *testing.T) {
 	if got := fmt.Sprint(rd.slices[0].Count); got != "[100]" {
 		t.Fatalf("一维请求 count 应为 [100]，实际 %s", got)
 	}
-	if !tt.HasText("第 1 / 3 页（共 250 行）") {
+	if !tt.HasText("行 0–99 / 250") {
 		t.Fatalf("一维页信息不正确，实际 %q", tt.Texts())
 	}
 	// 一维没有列分页控件。
@@ -472,7 +472,7 @@ func TestTableReadFailure(t *testing.T) {
 		t.Fatalf("展开详情后应显示错误原因，实际 %q", tt.Texts())
 	}
 	// 翻页控件仍在，视图未被错误接管。
-	if !tt.HasText("下一页") {
+	if !tt.HasText("下一屏") {
 		t.Fatalf("读取失败不应隐藏翻页控件，实际 %q", tt.Texts())
 	}
 }
@@ -570,7 +570,7 @@ func TestTableHugeDataset(t *testing.T) {
 	if total > 5000 {
 		t.Fatalf("首屏读取元素数应为一页（≤5000），实际 %d", total)
 	}
-	if !tt.HasText("第 1 / 1000 页（共 100000 行）") {
+	if !tt.HasText("行 0–99 / 100000") {
 		t.Fatalf("页信息不正确，实际 %q", tt.Texts())
 	}
 }
@@ -597,8 +597,316 @@ func TestTableRealFixture(t *testing.T) {
 	if !tt.HasText("0.01") {
 		t.Fatalf("应显示 0.01，实际 %q", tt.Texts())
 	}
-	if !tt.HasText("第 1 / 1 页（共 100 行）") {
+	if !tt.HasText("行 0–99 / 100") {
 		t.Fatalf("页信息不正确，实际 %q", tt.Texts())
+	}
+}
+
+// TestLocateCoordinates 覆盖任务 1.1：按坐标换算行列页号与固定前导维。
+func TestLocateCoordinates(t *testing.T) {
+	cases := []struct {
+		name      string
+		shape     []uint64
+		coords    []uint64
+		wantRow   int
+		wantCol   int
+		wantFixed []uint64
+	}{
+		{"二维中间页", []uint64{10000, 500}, []uint64{250, 137}, 2, 2, nil},
+		{"二维末行末列", []uint64{10000, 500}, []uint64{9999, 499}, 99, 9, nil},
+		{"三维固定前导维", []uint64{10, 1000, 500}, []uint64{3, 999, 499}, 9, 9, []uint64{3}},
+		{"一维", []uint64{250}, []uint64{240}, 2, 0, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := tableApp(t, tc.shape, &fakeReader{})
+			l := app.Layout()
+			if !l.OK {
+				t.Fatalf("布局应可用，实际 %+v", l)
+			}
+			if err := app.Locate(l, tc.coords); err != nil {
+				t.Fatalf("Locate(%v): %v", tc.coords, err)
+			}
+			if app.Table.RowPage != tc.wantRow || app.Table.ColPage != tc.wantCol {
+				t.Fatalf("页号应为 (%d,%d)，实际 (%d,%d)",
+					tc.wantRow, tc.wantCol, app.Table.RowPage, app.Table.ColPage)
+			}
+			if fmt.Sprint(app.Table.Fixed) != fmt.Sprint(tc.wantFixed) {
+				t.Fatalf("固定维应为 %v，实际 %v", tc.wantFixed, app.Table.Fixed)
+			}
+		})
+	}
+}
+
+// TestLocateGenOnlyOnPageChange 覆盖任务 1.2：同页定位不推进代号。
+func TestLocateGenOnlyOnPageChange(t *testing.T) {
+	app := tableApp(t, []uint64{10000, 500}, &fakeReader{})
+	l := app.Layout()
+
+	if err := app.Locate(l, []uint64{0, 0}); err != nil {
+		t.Fatalf("Locate: %v", err)
+	}
+	gen := app.gen
+	if err := app.Locate(l, []uint64{99, 49}); err != nil {
+		t.Fatalf("Locate 同页: %v", err)
+	}
+	if app.gen != gen {
+		t.Fatalf("同页定位不应推进代号，实际 %d → %d", gen, app.gen)
+	}
+	if err := app.Locate(l, []uint64{100, 50}); err != nil {
+		t.Fatalf("Locate 跨页: %v", err)
+	}
+	if app.gen == gen {
+		t.Fatalf("跨页定位应推进代号，实际仍为 %d", app.gen)
+	}
+}
+
+// TestLocateRejectsBadCoordinates 覆盖任务 1.3：越界坐标被拒绝且页号不变。
+func TestLocateRejectsBadCoordinates(t *testing.T) {
+	app := tableApp(t, []uint64{10, 20}, &fakeReader{})
+	l := app.Layout()
+
+	err := app.Locate(l, []uint64{10, 0})
+	if err == nil || !strings.Contains(err.Error(), "第 1 维") {
+		t.Fatalf("越界应指出维度，实际 %v", err)
+	}
+	if app.Table.RowPage != 0 || app.Table.ColPage != 0 {
+		t.Fatalf("越界不应改变页号，实际 (%d,%d)", app.Table.RowPage, app.Table.ColPage)
+	}
+	if err := app.Locate(l, []uint64{1}); err == nil {
+		t.Fatal("坐标数量不足应报错")
+	}
+}
+
+// TestParseCoords 覆盖任务 1.4：逗号、空格与空段的解析。
+func TestParseCoords(t *testing.T) {
+	cases := []struct {
+		in      string
+		rank    int
+		want    string
+		wantErr bool
+	}{
+		{"1, 2, 3", 3, "[1 2 3]", false},
+		{"1 2 3", 3, "[1 2 3]", false},
+		{"  1,, 2  ", 2, "[1 2]", false},
+		{"1,2，3", 3, "[1 2 3]", false},
+		{"", 2, "", true},
+		{"1, a", 2, "", true},
+		{"-1, 2", 2, "", true},
+		{"1,2", 3, "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			got, err := ParseCoords(tc.in, tc.rank)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("应报错，实际得到 %v", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseCoords: %v", err)
+			}
+			if fmt.Sprint(got) != tc.want {
+				t.Fatalf("解析结果应为 %s，实际 %v", tc.want, got)
+			}
+		})
+	}
+}
+
+// TestPagerSidesSplit 覆盖任务 2.1：行分页在左、列分页在右。
+func TestPagerSidesSplit(t *testing.T) {
+	app := tableApp(t, []uint64{1000, 120}, &fakeReader{})
+	tt := ui.NewTester(tableView(app), 1200, 700)
+	tt.Frame()
+
+	rowRange, ok := tt.Find("行 0–99 / 1000")
+	if !ok {
+		t.Fatalf("缺少行范围，texts %q", tt.Texts())
+	}
+	colRange, ok := tt.Find("列 0–49 / 120")
+	if !ok {
+		t.Fatalf("缺少列范围，texts %q", tt.Texts())
+	}
+	if rowRange.X >= colRange.X {
+		t.Fatalf("行分页应在左侧，行范围 x=%v 列范围 x=%v", rowRange.X, colRange.X)
+	}
+	rowButton, ok := tt.Find("上一屏")
+	if !ok {
+		t.Fatalf("缺少上一屏按钮，texts %q", tt.Texts())
+	}
+	colButton, ok := tt.Find("右侧列")
+	if !ok {
+		t.Fatalf("缺少右侧列按钮，texts %q", tt.Texts())
+	}
+	if rowButton.X >= colButton.X {
+		t.Fatalf("行按钮应在左侧，上一屏 x=%v 右侧列 x=%v", rowButton.X, colButton.X)
+	}
+}
+
+// TestPagerDirectionIsolation 覆盖任务 2.2：翻页只影响对应方向。
+func TestPagerDirectionIsolation(t *testing.T) {
+	app := tableApp(t, []uint64{1000, 120}, &fakeReader{})
+	tt := ui.NewTester(tableView(app), 1200, 700)
+	tt.Frame()
+
+	if err := tt.Click("下一屏"); err != nil {
+		t.Fatalf("Click 下一屏: %v", err)
+	}
+	tt.Frame()
+	if app.Table.RowPage != 1 || app.Table.ColPage != 0 {
+		t.Fatalf("行翻页后应为 (1,0)，实际 (%d,%d)", app.Table.RowPage, app.Table.ColPage)
+	}
+	if err := tt.Click("右侧列"); err != nil {
+		t.Fatalf("Click 右侧列: %v", err)
+	}
+	tt.Frame()
+	if app.Table.RowPage != 1 || app.Table.ColPage != 1 {
+		t.Fatalf("列翻页后应为 (1,1)，实际 (%d,%d)", app.Table.RowPage, app.Table.ColPage)
+	}
+	if err := tt.Click("上一屏"); err != nil {
+		t.Fatalf("Click 上一屏: %v", err)
+	}
+	tt.Frame()
+	if app.Table.RowPage != 0 || app.Table.ColPage != 1 {
+		t.Fatalf("行翻回后应为 (0,1)，实际 (%d,%d)", app.Table.RowPage, app.Table.ColPage)
+	}
+}
+
+// TestPagerHidesColumnForSingleColumn 覆盖任务 2.3：单列数据集不显示列分页。
+func TestPagerHidesColumnForSingleColumn(t *testing.T) {
+	app := tableApp(t, []uint64{250}, &fakeReader{})
+	tt := ui.NewTester(tableView(app), 1200, 700)
+	tt.Frame()
+
+	if tt.HasText("左侧列") || tt.HasText("右侧列") {
+		t.Fatalf("单列数据集不应有列分页，texts %q", tt.Texts())
+	}
+	if tt.HasText("列 0–49") {
+		t.Fatalf("单列数据集不应有列范围，texts %q", tt.Texts())
+	}
+	if !tt.HasText("行 0–99 / 250") || !tt.HasText("上一屏") {
+		t.Fatalf("行分页应仍可用，texts %q", tt.Texts())
+	}
+}
+
+// TestLocateInputJumpsToPage 覆盖任务 3.1：输入二维坐标后跳到对应页。
+func TestLocateInputJumpsToPage(t *testing.T) {
+	rd := &fakeReader{}
+	app := tableApp(t, []uint64{10000, 500}, rd)
+	tt := ui.NewTester(tableView(app), 1200, 700)
+	tt.Frame()
+
+	enter := func(label, value string) {
+		t.Helper()
+		if err := tt.Click(label); err != nil {
+			t.Fatalf("Click %s: %v", label, err)
+		}
+		tt.Frame()
+		tt.Key(ui.Ctrl, ui.KeyA)
+		tt.Type(value)
+		tt.Key(0, ui.KeyEnter)
+		tt.Frame()
+	}
+	enter("D0 输入", "250")
+	enter("D1 输入", "137")
+
+	if app.Table.RowPage != 2 || app.Table.ColPage != 2 {
+		t.Fatalf("应跳到 (2,2)，实际 (%d,%d)", app.Table.RowPage, app.Table.ColPage)
+	}
+	last := rd.slices[len(rd.slices)-1]
+	if fmt.Sprint(last.Start) != "[200 100]" || fmt.Sprint(last.Count) != "[100 50]" {
+		t.Fatalf("应读取 start=[200 100] count=[100 50]，实际 %v %v", last.Start, last.Count)
+	}
+}
+
+// TestLocateHighRankUsesSingleInput 覆盖任务 3.2：高秩只出现一个输入框。
+func TestLocateHighRankUsesSingleInput(t *testing.T) {
+	rd := &fakeReader{}
+	app := tableApp(t, []uint64{2, 2, 2, 100, 50}, rd)
+	tt := ui.NewTester(tableView(app), 1200, 700)
+	tt.Frame()
+
+	var fields int
+	for _, in := range tt.AccessAll() {
+		if in.Role == ui.RoleTextField {
+			fields++
+		}
+	}
+	if fields != 1 {
+		t.Fatalf("高秩应只有一个定位输入框，实际 %d 个", fields)
+	}
+
+	if err := tt.Click("坐标输入"); err != nil {
+		t.Fatalf("Click 坐标输入: %v", err)
+	}
+	tt.Frame()
+	tt.Key(ui.Ctrl, ui.KeyA)
+	tt.Type("1, 1, 0, 99, 49")
+	tt.Key(0, ui.KeyEnter)
+	tt.Frame()
+
+	if fmt.Sprint(app.Table.Fixed) != "[1 1 0]" {
+		t.Fatalf("固定维应为 [1 1 0]，实际 %v", app.Table.Fixed)
+	}
+	last := rd.slices[len(rd.slices)-1]
+	if fmt.Sprint(last.Start) != "[1 1 0 0 0]" || fmt.Sprint(last.Count) != "[1 1 1 100 50]" {
+		t.Fatalf("读取范围不正确，实际 %v %v", last.Start, last.Count)
+	}
+}
+
+// TestLocateErrorKeepsPage 覆盖任务 3.3：定位失败显示提示且不改页号。
+func TestLocateErrorKeepsPage(t *testing.T) {
+	app := tableApp(t, []uint64{1000, 120}, &fakeReader{})
+	tt := ui.NewTester(tableView(app), 1200, 700)
+	tt.Frame()
+
+	if err := tt.Click("D0 输入"); err != nil {
+		t.Fatalf("Click D0 输入: %v", err)
+	}
+	tt.Frame()
+	tt.Key(ui.Ctrl, ui.KeyA)
+	tt.Type("5000")
+	tt.Key(0, ui.KeyEnter)
+	tt.Frame()
+
+	if app.Table.RowPage != 0 || app.Table.ColPage != 0 {
+		t.Fatalf("越界不应改变页号，实际 (%d,%d)", app.Table.RowPage, app.Table.ColPage)
+	}
+	if !tt.HasText("定位失败") || !tt.HasText("第 1 维下标 5000 越界") {
+		t.Fatalf("应显示越界提示，texts %q", tt.Texts())
+	}
+	if !tt.HasText("下一屏") {
+		t.Fatalf("定位失败不应阻塞表格，texts %q", tt.Texts())
+	}
+
+	tt.Key(ui.Ctrl, ui.KeyA)
+	tt.Type("abc")
+	tt.Key(0, ui.KeyEnter)
+	tt.Frame()
+	if !tt.HasText("D0 必须是整数下标") {
+		t.Fatalf("应提示坐标格式错误，texts %q", tt.Texts())
+	}
+}
+
+// TestPagerFitsNarrowWindow 断言秩 4 时底栏在窄窗口内不溢出。
+func TestPagerFitsNarrowWindow(t *testing.T) {
+	app := tableApp(t, []uint64{2, 2, 100, 120}, &fakeReader{})
+	tt := ui.NewTester(tableView(app), 864, 700)
+	tt.Frame()
+
+	colButton, ok := tt.Find("右侧列")
+	if !ok {
+		t.Fatalf("窄窗口缺少列分页，texts %q", tt.Texts())
+	}
+	if colButton.X+colButton.W > 864 {
+		t.Fatalf("列分页超出窗口右边界：%+v", colButton)
+	}
+	if _, ok := tt.Find("D3 输入"); !ok {
+		t.Fatalf("秩 4 应有四个定位输入框，texts %q", tt.Texts())
+	}
+	if _, ok := tt.Find("跳至"); !ok {
+		t.Fatalf("窄窗口缺少跳至按钮，texts %q", tt.Texts())
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 
 	"github.com/egoist/mygo"
@@ -28,6 +29,16 @@ const (
 const (
 	modeTable = iota
 	modeImage
+)
+
+// 界面尺寸取自设计稿（A · 仪器）。
+const (
+	topBarH   = 46
+	sidebarW  = 296
+	tabStripH = 40
+	statusH   = 30
+	// inspectorBreakpoint 是显示右侧检查器所需的最小窗口宽度。
+	inspectorBreakpoint = 1180
 )
 
 // app 是窗口要展示的状态。视图在主线程上按帧从它构建界面：
@@ -62,7 +73,7 @@ type app struct {
 func newApp() *app {
 	return &app{
 		state:    view.NewApp(),
-		split:    320,
+		split:    sidebarW,
 		tab:      tabData,
 		dataMode: modeTable,
 	}
@@ -226,96 +237,336 @@ func (a *app) menu() *mygo.Menu {
 	})
 }
 
-// view 是窗口内容：空状态，或「左树 / 右工作区 + 状态栏」。
+// view 是窗口内容：顶栏 + 左树 / 右工作区 + 状态栏。
 func (a *app) view(c *ui.Context) {
-	if !a.state.HasDocument() {
-		a.emptyState(c)
-		return
-	}
-	ui.Column(c).Fill().Children(func() {
+	c.SetTheme(view.Theme())
+	ui.Column(c).Fill().Background(view.ColBg).Children(func() {
+		a.topBar(c)
+		if !a.state.HasDocument() {
+			a.emptyState(c)
+			return
+		}
 		ui.Split(c, &a.split,
 			func() { a.sidebar(c) },
 			func() { a.workspace(c) }).Grow(1)
 		if a.errMsg != "" {
 			a.errorBanner(c)
 		}
-		ui.Divider(c)
 		a.statusBar(c)
 	})
 }
 
+// topBar 是 46px 的顶栏：标记、文件名、菜单、只读徽标与打开按钮。
+//
+// Windows 上窗口使用隐藏标题栏（TitleBarHidden），顶栏同时充当标题栏：
+// 为右上角的窗口按钮留出 c.TitleBar().Right，并让空白处可拖动窗口。
+func (a *app) topBar(c *ui.Context) {
+	tb := c.TitleBar()
+	height := float32(topBarH)
+	if tb.Height > height {
+		height = tb.Height
+	}
+	bar := ui.Row(c).Shrink(0).Height(height).AlignItems(ui.Center).
+		Padding(0, tb.Right+16, 0, tb.Left+16).Gap(14).Background(view.ColPanel)
+	if tb.Height > 0 {
+		bar.DragWindow()
+	}
+	bar.Draw(func(p *ui.Painter, r ui.Rect) { view.Hairline(p, r, view.ColLine) })
+	bar.Children(func() {
+		mark := ui.Box(c).Size(20, 20).Shrink(0).Radius(4).
+			Background(view.ColAccent).Center()
+		mark.Children(func() {
+			ui.Text(c, "G").FontSize(11).FontWeight(700).TextColor(view.ColBg)
+		})
+		ui.Text(c, "GoHdfView").FontSize(13).FontWeight(600).
+			TextColor(view.ColText).SingleLine()
+		name := ""
+		if doc := a.state.Document(); doc != nil {
+			name = filepath.Base(doc.Path())
+		}
+		if name != "" {
+			a.topDivider(c)
+			ui.Text(c, name).Font(view.FontMono).FontSize(12).TextColor(view.ColDim).SingleLine()
+		}
+		ui.Spacer(c).Grow(1)
+		a.menuButton(c, "文件", a.fileMenu)
+		a.menuButton(c, "视图", a.viewMenu)
+		a.menuButton(c, "帮助", a.helpMenu)
+		a.topDivider(c)
+		a.readOnlyBadge(c)
+		view.AccentButton(c, "打开", func() { a.openDialog() })
+	})
+}
+
+func (a *app) topDivider(c *ui.Context) {
+	ui.Box(c).Width(1).Height(16).Shrink(0).Background(view.ColLine)
+}
+
+// menuButton 是顶栏的纯文字菜单按钮，菜单画在窗口内。
+func (a *app) menuButton(c *ui.Context, label string, build func(m *ui.Menu)) {
+	b := ui.ButtonBase(c).Padding(4, 6).Radius(4)
+	b.Children(func() {
+		ui.Text(c, label).FontSize(12.5).TextColor(view.ColDim).SingleLine()
+	})
+	b.PopoverMenuButton(build, ui.PopoverMenuButtonOptions{
+		Panel: func(panel ui.Element) {
+			panel.Background(view.ColPanel2).Border(1, view.ColLine).Radius(6).
+				NoShadow().Shadow(0, 12, 32, 0, ui.RGBA(0, 0, 0, 0.45))
+		},
+		Item: func(item ui.Element) { item.Padding(4, 8).Radius(4) },
+	})
+}
+
+func (a *app) readOnlyBadge(c *ui.Context) {
+	badge := ui.Row(c).Shrink(0).Height(24).AlignItems(ui.Center).Gap(6).
+		Padding(0, 9).Radius(4).Background(ui.Hex("#14181C"))
+	badge.Children(func() {
+		ui.Box(c).Size(5, 5).Shrink(0).Radius(3).Background(view.ColAccent)
+		ui.Text(c, "只读").FontSize(11).TextColor(view.ColDim).SingleLine()
+	})
+}
+
+// fileMenu / viewMenu / helpMenu 是窗口内菜单的内容，与系统菜单同源。
+func (a *app) fileMenu(m *ui.Menu) {
+	if m.Item("打开…").Shortcut(ui.Ctrl, ui.KeyO).Chosen() {
+		a.openDialog()
+	}
+	m.Separator()
+	if m.Item("关闭文件").Shortcut(ui.Ctrl, ui.KeyW).Chosen() {
+		a.closeFile()
+		a.invalidate()
+	}
+}
+
+func (a *app) viewMenu(m *ui.Menu) {
+	pick := func(t int) {
+		if t == tabData && !a.state.DataAvailable() {
+			return
+		}
+		a.tab = t
+		a.invalidate()
+	}
+	if m.Item("数据").Chosen() {
+		pick(tabData)
+	}
+	if m.Item("元数据").Chosen() {
+		pick(tabMetadata)
+	}
+	if m.Item("属性").Chosen() {
+		pick(tabAttributes)
+	}
+	m.Separator()
+	if m.Item("全部展开").Chosen() {
+		a.state.ExpandAll()
+		a.invalidate()
+	}
+	if m.Item("全部折叠").Chosen() {
+		a.state.CollapseAll()
+		a.invalidate()
+	}
+}
+
+func (a *app) helpMenu(m *ui.Menu) {
+	if m.Item("关于").Chosen() {
+		a.showAbout()
+	}
+}
+
 // emptyState 是没有打开文件时的界面。
 func (a *app) emptyState(c *ui.Context) {
-	ui.Column(c).Fill().Center().Gap(16).Padding(24).Children(func() {
-		ui.Text(c, "GoHdfView").FontSize(22).Bold()
-		ui.Text(c, "打开 HDF5 文件或把文件拖入窗口").TextColor(c.Theme().TextMuted)
-		ui.Button(c, "打开…").OnClick(func() { a.openDialog() })
+	ui.Column(c).Fill().Grow(1).Center().Gap(14).Padding(24).Children(func() {
+		ui.Text(c, "打开 HDF5 文件或把文件拖入窗口").FontSize(13).
+			TextColor(view.ColDim)
+		view.AccentButton(c, "打开…", func() { a.openDialog() })
 		if a.errMsg != "" {
-			ui.Column(c).Width(520).Gap(6).Children(func() {
-				ui.Text(c, a.errMsg).FontSize(12).TextColor(c.Theme().Warning)
-				ui.Button(c, "关闭提示").OnClick(func() { a.errMsg = "" })
+			box := ui.Column(c).Width(520).Gap(8).Padding(10, 12).Radius(5).
+				Background(view.ColWarnBg).Border(1, view.ColLine)
+			box.Children(func() {
+				ui.Text(c, a.errMsg).FontSize(12).TextColor(view.ColDim)
+				ui.Row(c).Children(func() {
+					ui.Spacer(c).Grow(1)
+					view.GhostButton(c, "关闭提示", func() { a.errMsg = "" })
+				})
 			})
 		}
 	})
 }
 
-// sidebar 是左栏：树操作按钮与对象树。
+// sidebar 是左栏：标题栏、树操作与对象树。
 func (a *app) sidebar(c *ui.Context) {
-	ui.Column(c).Fill().Gap(6).Padding(8).Children(func() {
-		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "对象").Bold().FontSize(13).Grow(1)
-			ui.Button(c, "全部展开").OnClick(func() {
-				a.state.ExpandAll()
-			})
-			ui.Button(c, "全部折叠").OnClick(func() {
-				a.state.CollapseAll()
-			})
+	col := ui.Column(c).Fill().Background(view.ColPanel)
+	col.Draw(func(p *ui.Painter, r ui.Rect) { view.VLine(p, r, view.ColLine) })
+	col.Children(func() {
+		head := ui.Row(c).Shrink(0).Height(38).AlignItems(ui.Center).
+			Padding(0, 14).Gap(8)
+		head.Draw(func(p *ui.Painter, r ui.Rect) { view.Hairline(p, r, view.ColLineSoft) })
+		head.Children(func() {
+			ui.Text(c, "对象树").FontSize(11).FontWeight(500).TextColor(view.ColMute).
+				LetterSpacing(1.1).SingleLine()
+			ui.Spacer(c).Grow(1)
+			a.iconAction(c, view.IconExpand, "全部展开", func() { a.state.ExpandAll() })
+			a.iconAction(c, view.IconCollapse, "全部折叠", func() { a.state.CollapseAll() })
+			a.treeMore(c)
 		})
 		view.Tree(c, a.state)
 	})
 }
 
-// workspace 是右栏：路径、标签页与当前视图。
+// iconAction 是侧栏标题栏的 13px 图标按钮。
+func (a *app) iconAction(c *ui.Context, icon *ui.SVG, label string, onClick func()) {
+	b := ui.ButtonBase(c).Padding(2).Radius(4).Label(label)
+	b.Children(func() {
+		ui.Icon(c, icon).Size(13, 13).TextColor(view.ColMute)
+	})
+	b.OnClick(onClick)
+}
+
+// treeMore 是侧栏标题栏的更多菜单，与图标按钮承载相同的树操作。
+func (a *app) treeMore(c *ui.Context) {
+	b := ui.ButtonBase(c).Padding(2).Radius(4).Label("更多")
+	b.Children(func() {
+		ui.Icon(c, view.IconMore).Size(13, 13).TextColor(view.ColMute)
+	})
+	b.PopoverMenuButton(func(m *ui.Menu) {
+		if m.Item("全部展开").Chosen() {
+			a.state.ExpandAll()
+		}
+		if m.Item("全部折叠").Chosen() {
+			a.state.CollapseAll()
+		}
+	}, ui.PopoverMenuButtonOptions{
+		Panel: func(panel ui.Element) {
+			panel.Background(view.ColPanel2).Border(1, view.ColLine).Radius(6).
+				NoShadow().Shadow(0, 12, 32, 0, ui.RGBA(0, 0, 0, 0.45))
+		},
+		Item: func(item ui.Element) { item.Padding(4, 8).Radius(4) },
+	})
+}
+
+// workspace 是右栏：路径、标题、标签页、当前视图与检查器。
 func (a *app) workspace(c *ui.Context) {
 	// 选中的对象没有数据视图时，「数据」标签置灰并自动落到「元数据」。
 	if a.tab == tabData && !a.state.DataAvailable() {
 		a.tab = tabMetadata
 	}
-	ui.Column(c).Fill().Gap(8).Padding(12).Children(func() {
-		view.Breadcrumb(c, a.state)
-		a.tabBar(c)
-		ui.Divider(c)
+	// 窗口窄时收起检查器，优先保证表格可用宽度。
+	w, _ := c.Size()
+	showInspector := w >= inspectorBreakpoint
+	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 		ui.Column(c).Fill().Grow(1).Children(func() {
-			switch a.tab {
-			case tabData:
-				a.dataView(c)
-			case tabAttributes:
-				view.Attributes(c, a.state)
-			default:
-				view.Metadata(c, a.state)
+			view.Breadcrumb(c, a.state)
+			a.titleBlock(c)
+			a.tabBar(c)
+			ui.Column(c).Fill().Grow(1).Children(func() {
+				switch a.tab {
+				case tabData:
+					a.dataView(c)
+				case tabAttributes:
+					view.Attributes(c, a.state)
+				default:
+					view.Metadata(c, a.state)
+				}
+			})
+		})
+		if showInspector {
+			view.Inspector(c, a.state)
+		}
+	})
+}
+
+// titleBlock 是对象标题：名称、类型标签与维度概要。
+func (a *app) titleBlock(c *ui.Context) {
+	n := a.state.Current
+	if n == nil {
+		return
+	}
+	box := ui.Column(c).Shrink(0).Padding(16, 20).Gap(8)
+	box.Children(func() {
+		ui.Row(c).AlignItems(ui.Center).Gap(10).Children(func() {
+			ui.Text(c, n.Name).FontSize(22).FontWeight(600).
+				TextColor(view.ColText).SingleLine()
+			view.Chip(c, view.TypeChip(n))
+			ui.Spacer(c).Grow(1)
+			if s := n.DimensionSummary(); s != "" {
+				ui.Text(c, s).Font(view.FontMono).FontSize(11.5).
+					TextColor(view.ColMute).SingleLine()
 			}
 		})
 	})
 }
 
-// tabBar 画三个视图标签。
+// tabBar 画三个视图标签，右侧是表格/图像的分段切换。
 //
 // 用 TabsBase 而不是 Tabs：只有前者能把单个标签设为不可用，
 // 而「数据」标签在选中组时必须置灰（viewer-shell 的视图切换）。
 func (a *app) tabBar(c *ui.Context) {
 	names := []string{"数据", "元数据", "属性"}
-	tabs := ui.TabsBase(c, &a.tab, len(names))
-	tabs.List.Gap(4).Children(func() {
-		for i, name := range names {
-			tab := tabs.Tab(i).Padding(6, 12).Radius(6)
-			if i == a.tab {
-				tab.Background(c.Theme().Surface)
+	bar := ui.Row(c).Shrink(0).Height(tabStripH).AlignItems(ui.Stretch).
+		Padding(0, 20).Gap(22)
+	bar.Draw(func(p *ui.Painter, r ui.Rect) { view.Hairline(p, r, view.ColLineSoft) })
+	bar.Children(func() {
+		tabs := ui.TabsBase(c, &a.tab, len(names))
+		tabs.List.Gap(22).AlignItems(ui.Stretch).Children(func() {
+			for i, name := range names {
+				i, name := i, name
+				on := i == a.tab
+				col := view.ColMute
+				if on {
+					col = view.ColText
+				}
+				tab := tabs.Tab(i).Justify(ui.End).Padding(0, 2)
+				if i == tabData && !a.state.DataAvailable() {
+					tab.Disabled(true)
+				}
+				tab.Children(func() {
+					ui.Text(c, name).FontSize(13).FontWeight(weight(on, 600)).
+						TextColor(col).SingleLine()
+				})
+				tab.Draw(func(p *ui.Painter, r ui.Rect) {
+					if on {
+						p.Fill(ui.Rect{X: r.X, Y: r.Y + r.H - 2, W: r.W, H: 2},
+							view.ColAccent, 1)
+					}
+				})
 			}
-			if i == tabData && !a.state.DataAvailable() {
-				tab.Disabled(true)
+		})
+		ui.Spacer(c).Grow(1)
+		if a.state.DataAvailable() {
+			a.modeSwitch(c)
+		}
+	})
+}
+
+func weight(on bool, w int) int {
+	if on {
+		return w
+	}
+	return 400
+}
+
+// modeSwitch 是「表格 / 图像」分段控件（A · 仪器设计稿）。
+func (a *app) modeSwitch(c *ui.Context) {
+	names := []string{"表格", "图像"}
+	icons := []*ui.SVG{view.IconTable, view.IconImage}
+	seg := ui.SegmentedBase(c, &a.dataMode, len(names))
+	seg.Track.AlignItems(ui.Stretch).Padding(2).Gap(2).Radius(5).
+		Background(ui.Hex("#0B0E10")).Border(1, view.ColLine)
+	seg.Track.Children(func() {
+		for i := range names {
+			i := i
+			on := i == a.dataMode
+			col := view.ColMute
+			if on {
+				col = view.ColText
 			}
-			tab.Children(func() {
-				ui.Text(c, name)
+			s := seg.Segment(i).Padding(4, 9).Radius(4).Gap(5).
+				AlignItems(ui.Center).Justify(ui.Center)
+			if on {
+				s.Background(view.ColSel)
+			}
+			s.Children(func() {
+				ui.Icon(c, icons[i]).Size(11, 11).TextColor(col)
+				ui.Text(c, names[i]).FontSize(11.5).TextColor(col).SingleLine()
 			})
 		}
 	})
@@ -325,70 +576,57 @@ func (a *app) tabBar(c *ui.Context) {
 func (a *app) dataView(c *ui.Context) {
 	if !a.state.DataAvailable() {
 		ui.Column(c).Fill().Center().Children(func() {
-			ui.Text(c, "该对象没有数据视图").TextColor(c.Theme().TextMuted)
+			ui.Text(c, "该对象没有数据视图").FontSize(12).TextColor(view.ColMute)
 		})
 		return
 	}
-	ui.Column(c).Fill().Gap(6).Children(func() {
-		a.dataModeBar(c)
-		ui.Column(c).Fill().Grow(1).Children(func() {
-			if a.dataMode == modeImage {
-				view.ImageView(c, a.state)
-				return
-			}
-			view.DataTable(c, a.state)
-		})
-	})
-}
-
-// dataModeBar 在表格与图像之间切换。
-//
-// 图像不可用时不禁用该标签：选中后由图像视图说明为什么不可用，
-// 比一个点不动的灰色标签更有用（dataset-data-view 的图像 scenario）。
-func (a *app) dataModeBar(c *ui.Context) {
-	names := []string{"表格", "图像"}
-	tabs := ui.TabsBase(c, &a.dataMode, len(names))
-	tabs.List.Gap(4).Children(func() {
-		for i, name := range names {
-			tab := tabs.Tab(i).Padding(4, 10).Radius(6)
-			if i == a.dataMode {
-				tab.Background(c.Theme().Surface)
-			}
-			tab.Children(func() {
-				ui.Text(c, name).FontSize(12)
-			})
+	ui.Column(c).Fill().Children(func() {
+		if a.dataMode == modeImage {
+			view.ImageView(c, a.state)
+			return
 		}
+		view.DataTable(c, a.state)
 	})
 }
 
 // errorBanner 是非模态错误提示条，可关闭且不阻塞浏览（任务 7.5）。
 func (a *app) errorBanner(c *ui.Context) {
-	ui.Row(c).Gap(8).Padding(6, 12).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "⚠").TextColor(c.Theme().Warning)
-		ui.Text(c, a.errMsg).FontSize(12).Grow(1).SingleLine()
-		ui.Button(c, "关闭提示").OnClick(func() { a.errMsg = "" })
+	bar := ui.Row(c).Shrink(0).AlignItems(ui.Center).Padding(6, 16).Gap(8).
+		Background(view.ColWarnBg)
+	bar.Draw(func(p *ui.Painter, r ui.Rect) { view.Hairline(p, r, view.ColLine) })
+	bar.Children(func() {
+		ui.Text(c, "⚠").FontSize(12).TextColor(view.ColAccent).SingleLine()
+		ui.Text(c, a.errMsg).FontSize(11.5).TextColor(view.ColDim).
+			Grow(1).SingleLine()
+		view.GhostButton(c, "关闭提示", func() { a.errMsg = "" })
 	})
 }
 
 // statusBar 显示文件名、当前对象路径与元素总数。
 func (a *app) statusBar(c *ui.Context) {
-	ui.Row(c).Gap(12).Padding(6, 12).AlignItems(ui.Center).Children(func() {
+	bar := ui.Row(c).Shrink(0).Height(statusH).AlignItems(ui.Center).
+		Padding(0, 16).Gap(10).Background(view.ColPanel)
+	bar.Draw(func(p *ui.Painter, r ui.Rect) { view.Hairline(p, r, view.ColLine) })
+	bar.Children(func() {
 		doc := a.state.Document()
 		name := "（未打开文件）"
 		if doc != nil {
 			name = filepath.Base(doc.Path())
 		}
-		ui.Text(c, name).FontSize(12).SingleLine()
+		ui.Text(c, name).FontSize(11.5).TextColor(view.ColDim).SingleLine()
 		if n := a.state.Current; n != nil {
-			ui.Text(c, view.PathText(n)).FontSize(12).
-				TextColor(c.Theme().TextMuted).SingleLine()
-			ui.Text(c, a.countText(n)).FontSize(12).
-				TextColor(c.Theme().TextMuted).SingleLine()
+			ui.Text(c, "·").FontSize(11.5).TextColor(view.ColFaint).SingleLine()
+			ui.Text(c, view.PathText(n)).Font(view.FontMono).FontSize(11).
+				TextColor(view.ColMute).SingleLine()
+			if s := a.countText(n); s != "" {
+				ui.Text(c, "·").FontSize(11.5).TextColor(view.ColFaint).SingleLine()
+				ui.Text(c, s).FontSize(11.5).TextColor(view.ColMute).SingleLine()
+			}
 		}
-		ui.Spacer(c)
+		ui.Spacer(c).Grow(1)
 		if doc != nil {
-			ui.Text(c, formatSize(doc.Size())).FontSize(12).
-				TextColor(c.Theme().TextMuted).SingleLine()
+			ui.Text(c, formatSize(doc.Size())).Font(view.FontMono).FontSize(11).
+				TextColor(view.ColMute).SingleLine()
 		}
 	})
 }
@@ -432,15 +670,24 @@ func formatSize(n int64) string {
 func main() {
 	a := newApp()
 	mygo.App.WhenReady(func() {
-		a.win = mygo.NewWindow(mygo.WindowOptions{
-			Title:     "GoHdfView",
-			Width:     1200,
-			Height:    800,
-			MinWidth:  800,
-			MinHeight: 520,
-			StateKey:  "main",
-			Content:   ui.View(a.view),
-		})
+		opts := mygo.WindowOptions{
+			Title:           "GoHdfView",
+			Width:           1440,
+			Height:          900,
+			MinWidth:        800,
+			MinHeight:       520,
+			StateKey:        "main",
+			AutoHideMenuBar: true,
+			Content:         ui.View(a.view),
+		}
+		if runtime.GOOS == "windows" {
+			// 隐藏系统标题栏，由顶栏充当标题栏，避免浅色模式下的白条；
+			// 窗口按钮仍由系统绘制，按深色背景配色。
+			opts.TitleBarStyle = mygo.TitleBarHidden
+			opts.TitleBarHeight = topBarH
+		}
+		a.win = mygo.NewWindow(opts)
+		a.win.SetWindowButtonsTheme(mygo.ThemeDark)
 
 		// 大切片在工作 goroutine 上读，结果经 Window.Update 写回，
 		// 避免读取期间界面不响应（design.md 决策 4）。

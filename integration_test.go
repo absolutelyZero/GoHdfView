@@ -68,7 +68,7 @@ func TestIntegrationFullPath(t *testing.T) {
 		t.Fatalf("点击数据失败：%v", err)
 	}
 	tt.Frame()
-	if !tt.HasText("第 1 / 1 页（共 64 行）") {
+	if !tt.HasText("行 0–63 / 64") {
 		t.Errorf("数据视图缺少分页信息，texts %q", tt.Texts())
 	}
 

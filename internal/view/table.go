@@ -30,6 +30,11 @@ type TableState struct {
 	Fixed []uint64
 }
 
+// quickLocateMax 是逐维输入框的上限。
+//
+// 秩超过这个值时，底栏改用一个逗号分隔的输入框，避免控件过多。
+const quickLocateMax = 4
+
 // tableKey 标识一次表格读取请求。
 //
 // 它是过期判定的依据：选中对象或翻页会改变 key，
@@ -79,6 +84,10 @@ func (a *App) resetTable() {
 	a.tableErr = nil
 	a.inflight = nil
 	a.cellDetail = ""
+	a.locateBoxes = [quickLocateMax]string{}
+	a.locateText = ""
+	a.locateErr = ""
+	a.locateReady = false
 	a.gen++
 }
 
@@ -439,438 +448,76 @@ func (a *App) SetFixedDim(i int, v uint64) {
 	a.gen++
 }
 
-// DataTable 构建数据视图的表格（任务 5.1–5.6）。
-func DataTable(c *ui.Context, app *App) {
-	l := app.Layout()
+// axisName 返回输入框的轴名，D0 是最外层维度。
+func axisName(i int) string { return "D" + strconv.Itoa(i) }
+
+// Locate 把完整坐标换算成行、列页号，并更新被固定的前导维。
+//
+// 坐标长度必须等于数据集秩，每个值必须是该维的合法下标。
+// 目标页与当前页完全相同时不推进代号，避免缓存失效与重复读取。
+func (a *App) Locate(l TableLayout, coords []uint64) error {
 	if !l.OK {
-		ui.Column(c).Fill().Center().Padding(24).Children(func() {
-			ui.Text(c, l.Reason).TextColor(c.Theme().TextMuted)
-		})
-		return
+		return errors.New("当前对象不可用")
 	}
 	if l.Scalar {
-		scalarValue(c, app, l)
-		return
+		return errors.New("标量没有可分页的坐标")
 	}
-
-	app.ensureTable(l)
-	ui.Column(c).Fill().Gap(8).Children(func() {
-		tableToolbar(c, app, l)
-		if app.tableErr != nil {
-			readFailure(c, app, app.tableErr)
+	if len(coords) != l.Rank {
+		return fmt.Errorf("坐标需要 %d 个值，实际 %d 个", l.Rank, len(coords))
+	}
+	for i, v := range coords {
+		if i >= len(l.Dims) {
+			return fmt.Errorf("第 %d 维不存在", i+1)
 		}
-		tableBody(c, app, l)
-		pager(c, app, l)
-	})
-}
-
-// scalarValue 显示秩为 0 的单个值。
-func scalarValue(c *ui.Context, app *App, l TableLayout) {
-	app.ensureTable(l)
-	ui.Column(c).Fill().Padding(24).Gap(8).Children(func() {
-		ui.Text(c, "标量值").TextColor(c.Theme().TextMuted).FontSize(12)
-		switch d := app.tableData.(type) {
-		case *hdf5.Slice:
-			if len(d.Values) > 0 {
-				ui.Text(c, formatNumber(app.datatype(), d.Values[0])).FontSize(20).Bold()
-				return
-			}
-			ui.Text(c, "（无值）").TextColor(c.Theme().TextMuted)
-		default:
-			if app.tableErr != nil {
-				readFailure(c, app, app.tableErr)
-				return
-			}
-			ui.Text(c, "（无值）").TextColor(c.Theme().TextMuted)
+		if v >= l.Dims[i] {
+			return fmt.Errorf("第 %d 维下标 %d 越界（范围 0–%d）", i+1, v, l.Dims[i]-1)
 		}
-	})
-}
-
-// datatype 返回当前数据集的元素类型；读取失败时返回零值。
-func (a *App) datatype() hdf5.DatatypeInfo {
-	if a.curInfo != nil {
-		return a.curInfo.Datatype
-	}
-	if a.Current == nil {
-		return hdf5.DatatypeInfo{}
-	}
-	info, err := a.info(a.Current)
-	if err != nil {
-		return hdf5.DatatypeInfo{}
-	}
-	return info.Datatype
-}
-
-// tableToolbar 显示维度选择器（秩 ≥ 3）与页信息。
-func tableToolbar(c *ui.Context, app *App, l TableLayout) {
-	if len(l.Leading) == 0 {
-		return
-	}
-	ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "固定前导维").FontSize(12).TextColor(c.Theme().TextMuted)
-		for i := range l.Leading {
-			idx := i
-			limit := int(l.Dims[idx])
-			opts := dimOptions(limit)
-			sel := strconv.FormatUint(app.Table.Fixed[idx], 10)
-			ui.Select(c, &sel, opts).OnChange(func() {
-				if v, err := strconv.ParseUint(sel, 10, 64); err == nil {
-					app.SetFixedDim(idx, v)
-				}
-			})
-		}
-	})
-}
-
-// dimOptions 生成维度选择器的选项；过大的维度只列出前若干项。
-func dimOptions(n int) []string {
-	const cap = 500
-	if n <= 0 {
-		return []string{"0"}
-	}
-	if n > cap {
-		n = cap
-	}
-	out := make([]string, n)
-	for i := range out {
-		out[i] = strconv.Itoa(i)
-	}
-	return out
-}
-
-// tableBody 画表格本体或字符串/复合的替代呈现。
-func tableBody(c *ui.Context, app *App, l TableLayout) {
-	switch l.Kind {
-	case readStrings:
-		stringsTable(c, app, l)
-		return
-	case readCompound:
-		compoundTable(c, app, l)
-		return
 	}
 
-	rs, rc, cs, cc := app.pageWindow(l)
-	if rc <= 0 || cc <= 0 {
-		ui.Column(c).Fill().Center().Children(func() {
-			ui.Text(c, "（空数据集）").TextColor(c.Theme().TextMuted)
-		})
-		return
-	}
-
-	// 注意判 nil：读取失败时 fakeReader/真实读取器返回的是
-	// 类型化 nil 指针，装进 any 后不等于 nil，单看 ok 会拿到空指针。
-	data, ok := app.tableData.(*hdf5.Slice)
-	if !ok || data == nil {
-		// 没有数据时：读取失败就画一张全部标为不可用的表，
-		// 让用户看到受影响的区域范围；否则说明仍在读取。
-		if app.tableErr != nil {
-			failedTable(c, app, l, rs, rc, cs, cc)
-			return
-		}
-		ui.Column(c).Fill().Center().Children(func() {
-			ui.Text(c, "正在读取…").TextColor(c.Theme().TextMuted)
-		})
-		return
-	}
-
-	// 列：首列是行号，其后是当前列页的列号。
-	cols := make([]ui.TableColumn, 0, cc+1)
-	cols = append(cols, ui.TableColumn{Title: "", RowHeader: true, Width: 64, Fixed: true})
-	for j := 0; j < cc; j++ {
-		cols = append(cols, ui.TableColumn{Title: strconv.Itoa(cs + j), Width: 110, Align: ui.End})
-	}
-
-	dt := app.datatype()
-	app.TableList.Selected = nil
-	ui.Table(c, &app.TableList, cols, rc, func(row, col int) {
-		if col == 0 {
-			ui.Text(c, strconv.Itoa(rs+row)).FontSize(12).TextColor(c.Theme().TextMuted)
-			return
-		}
-		idx := row*cc + (col - 1)
-		if idx < 0 || idx >= len(data.Values) {
-			ui.Text(c, "—").TextColor(c.Theme().TextMuted)
-			return
-		}
-		ui.Text(c, formatNumber(dt, data.Values[idx])).SingleLine()
-	}).Grow(1)
-}
-
-// failedTable 在读取失败时画出受影响区域的占位表（任务 5.6）。
-//
-// 只标注本页范围内的单元格，视图其它部分（树、元数据、翻页）照常可用。
-func failedTable(c *ui.Context, app *App, l TableLayout, rs, rc, cs, cc int) {
-	cols := make([]ui.TableColumn, 0, cc+1)
-	cols = append(cols, ui.TableColumn{Title: "", RowHeader: true, Width: 64, Fixed: true})
-	for j := 0; j < cc; j++ {
-		cols = append(cols, ui.TableColumn{Title: strconv.Itoa(cs + j), Width: 110, Align: ui.End})
-	}
-	app.TableList.Selected = nil
-	ui.Table(c, &app.TableList, cols, rc, func(row, col int) {
-		if col == 0 {
-			ui.Text(c, strconv.Itoa(rs+row)).FontSize(12).TextColor(c.Theme().TextMuted)
-			return
-		}
-		ui.Text(c, failureCell).FontSize(12).TextColor(c.Theme().TextMuted)
-	}).Grow(1)
-}
-
-// stringsTable 以单列展示字符串数据集。
-// stringsTable 以单列展示字符串数据集。
-//
-// 单元格里的长文本会被截断；点击单元格把完整值放到上方的详情区，
-// 这是 spec「变长字符串数据集」要求的「可通过单元格详情查看完整值」。
-func stringsTable(c *ui.Context, app *App, l TableLayout) {
-	data, ok := app.tableData.(*hdf5.Strings)
-	if !ok || data == nil {
-		ui.Column(c).Fill().Center().Children(func() {
-			ui.Text(c, "正在读取…").TextColor(c.Theme().TextMuted)
-		})
-		return
-	}
-	if app.cellDetail != "" {
-		cellDetailPanel(c, app)
-	}
-	cols := []ui.TableColumn{
-		{Title: "", RowHeader: true, Width: 64, Fixed: true},
-		{Title: "值", Width: 320},
-	}
-	n := min(defaultPageRows, len(data.Values)-app.Table.RowPage*defaultPageRows)
-	if n < 0 {
-		n = 0
-	}
-	rs := app.Table.RowPage * defaultPageRows
-	ui.Table(c, &app.TableList, cols, n, func(row, col int) {
-		if col == 0 {
-			ui.Text(c, strconv.Itoa(rs+row)).FontSize(12).TextColor(c.Theme().TextMuted)
-			return
-		}
-		idx := rs + row
-		if idx < 0 || idx >= len(data.Values) {
-			ui.Text(c, "—").TextColor(c.Theme().TextMuted)
-			return
-		}
-		full := data.Values[idx]
-		ui.Text(c, truncateCell(full)).SingleLine().
-			OnClick(func() { app.cellDetail = full })
-	}).Grow(1)
-}
-
-// cellDetailPanel 显示被点开的单元格全文。
-func cellDetailPanel(c *ui.Context, app *App) {
-	ui.Column(c).Gap(4).Padding(8, 12).Children(func() {
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "单元格全文").FontSize(12).TextColor(c.Theme().TextMuted)
-			ui.Textf(c, "%d 个字符", len([]rune(app.cellDetail))).
-				FontSize(12).TextColor(c.Theme().TextMuted)
-			ui.Spacer(c).Grow(1)
-			ui.Button(c, "收起").OnClick(func() { app.cellDetail = "" })
-		})
-		ui.Text(c, app.cellDetail).FontSize(12)
-	})
-}
-
-// compoundTable 以每成员一列展示复合数据集。
-func compoundTable(c *ui.Context, app *App, l TableLayout) {
-	data, ok := app.tableData.(*hdf5.Compound)
-	if !ok || data == nil {
-		ui.Column(c).Fill().Center().Children(func() {
-			ui.Text(c, "正在读取…").TextColor(c.Theme().TextMuted)
-		})
-		return
-	}
-	cols := make([]ui.TableColumn, 0, len(data.Members)+1)
-	cols = append(cols, ui.TableColumn{Title: "", RowHeader: true, Width: 64, Fixed: true})
-	for _, m := range data.Members {
-		cols = append(cols, ui.TableColumn{Title: m, Width: 140})
-	}
-	rs := app.Table.RowPage * defaultPageRows
-	n := min(defaultPageRows, len(data.Rows)-rs)
-	if n < 0 {
-		n = 0
-	}
-	ui.Table(c, &app.TableList, cols, n, func(row, col int) {
-		if col == 0 {
-			ui.Text(c, strconv.Itoa(rs+row)).FontSize(12).TextColor(c.Theme().TextMuted)
-			return
-		}
-		idx := rs + row
-		if idx < 0 || idx >= len(data.Rows) {
-			ui.Text(c, "—").TextColor(c.Theme().TextMuted)
-			return
-		}
-		name := data.Members[col-1]
-		ui.Text(c, formatAny(data.Rows[idx][name])).SingleLine()
-	}).Grow(1)
-}
-
-// pager 显示翻页控件与页信息。
-func pager(c *ui.Context, app *App, l TableLayout) {
-	rows := l.Rows
-	if l.Kind != readNumeric {
-		rows = pageRowTotal(app, l)
-	}
-	rowPages := PageCount(rows)
-	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-		ui.Button(c, "上一页").OnClick(func() { app.PrevPage(l) })
-		ui.Textf(c, "第 %d / %d 页（共 %d 行）", app.Table.RowPage+1, rowPages, rows).
-			FontSize(12).TextColor(c.Theme().TextMuted)
-		ui.Button(c, "下一页").OnClick(func() { app.NextPage(l) })
-		if l.Rank >= 2 && l.Cols > defaultPageCols {
-			ui.Spacer(c).Grow(1)
-			ui.Button(c, "左侧列").OnClick(func() { app.PrevColPage(l) })
-			ui.Textf(c, "列 %d–%d / %d", app.Table.ColPage*defaultPageCols+1,
-				min((app.Table.ColPage+1)*defaultPageCols, l.Cols), l.Cols).
-				FontSize(12).TextColor(c.Theme().TextMuted)
-			ui.Button(c, "右侧列").OnClick(func() { app.NextColPage(l) })
-		}
-	})
-}
-
-// pageRowTotal 返回字符串/复合数据集的总行数。
-func pageRowTotal(app *App, l TableLayout) int {
-	switch d := app.tableData.(type) {
-	case *hdf5.Strings:
-		return len(d.Values)
-	case *hdf5.Compound:
-		return len(d.Rows)
-	}
-	return l.Rows
-}
-
-// readFailure 显示读取失败的提示与原因（任务 5.6）。
-//
-// 提示是非模态的：表格其余部分照常渲染，用户可以继续浏览其它对象。
-// 「详情」按钮展开完整错误文本，默认只显示一行摘要。
-func readFailure(c *ui.Context, app *App, err error) {
-	// 「不支持」「超上限」与「读取失败」对用户是不同的结论：前者是
-	// 这个文件用了本阅读器不解码的过滤器，重试也没用；超上限需要
-	// 换一种读法；只有后者可能是局部损坏。
-	head := "该区域读取失败，单元格显示为不可用："
+	var row, col uint64
 	switch {
-	case errors.Is(err, hdf5.ErrUnsupported):
-		head = "该过滤器不受支持，无法解码："
-	case errors.Is(err, hdf5.ErrTooLarge):
-		head = "该区域一次读取的数据量超过上限，请改用分页或图像视图："
+	case l.Rank >= 2:
+		row, col = coords[l.Rank-2], coords[l.Rank-1]
+	case l.Rank == 1:
+		row = coords[0]
 	}
-	ui.Column(c).Gap(4).Padding(8, 12).Children(func() {
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, "⚠").TextColor(c.Theme().TextMuted)
-			ui.Text(c, head).FontSize(12).
-				TextColor(c.Theme().TextMuted)
-			ui.Spacer(c).Grow(1)
-			label := "详情"
-			if app.errDetail {
-				label = "收起"
-			}
-			ui.Button(c, label).OnClick(func() { app.errDetail = !app.errDetail })
-		})
-		if app.errDetail {
-			ui.Text(c, err.Error()).FontSize(12).TextColor(c.Theme().TextMuted)
+	rowPage := int(row / uint64(defaultPageRows))
+	colPage := int(col / uint64(defaultPageCols))
+
+	lead := len(l.Leading)
+	changed := rowPage != a.Table.RowPage || colPage != a.Table.ColPage
+	a.ensureFixed(lead)
+	for i := 0; i < lead; i++ {
+		if a.Table.Fixed[i] != coords[i] {
+			changed = true
 		}
-	})
-}
-
-// failureCell 是读取失败时单元格显示的占位文本。
-const failureCell = "不可用"
-
-// tableFailure 报告当前页是否因读取失败而没有数据。
-func tableFailure(app *App) error {
-	if app.tableData == nil && app.tableErr != nil {
-		return app.tableErr
+		a.Table.Fixed[i] = coords[i]
+	}
+	a.Table.RowPage = rowPage
+	a.Table.ColPage = colPage
+	if changed {
+		a.gen++
 	}
 	return nil
 }
 
-// truncateCell 截断过长的单元格文本。
-func truncateCell(s string) string {
-	const limit = 200
-	r := []rune(s)
-	if len(r) <= limit {
-		return s
-	}
-	return string(r[:limit]) + "…"
-}
-
-// formatAny 把复合成员的任意值格式化为文本。
-func formatAny(v any) string {
-	switch x := v.(type) {
-	case nil:
-		return "—"
-	case float64:
-		return strconv.FormatFloat(x, 'g', -1, 64)
-	case float32:
-		return strconv.FormatFloat(float64(x), 'g', -1, 32)
-	case int64:
-		return strconv.FormatInt(x, 10)
-	case int32:
-		return strconv.FormatInt(int64(x), 10)
-	case uint64:
-		return strconv.FormatUint(x, 10)
-	case uint32:
-		return strconv.FormatUint(uint64(x), 10)
-	case string:
-		return truncateCell(x)
-	default:
-		return "—"
-	}
-}
-
-// approxThreshold 是 2^53：超过它的整数无法在 float64 中精确表示。
-const approxThreshold = 1 << 53
-
-// formatNumber 按元素类型格式化一个数值（任务 5.4）。
+// ParseCoords 把逗号或空白分隔的坐标文本解析成下标切片。
 //
-// 解析库把一切数值统一转成 float64，因此 8 字节整数超过 2^53 时
-// 已经损失精度；这里不假装精确，而是在值后加 ≈ 标记（design.md 决策 9）。
-// 无符号 64 位整数按无符号解释显示，不出现负数。
-func formatNumber(dt hdf5.DatatypeInfo, v float64) string {
-	switch {
-	case math.IsNaN(v):
-		return "NaN"
-	case math.IsInf(v, 1):
-		return "+Inf"
-	case math.IsInf(v, -1):
-		return "-Inf"
-	}
-
-	// 枚举：显示成员名。
-	if dt.IsEnum() && len(dt.EnumMembers) > 0 {
-		if name, ok := enumName(dt, v); ok {
-			return name
+// 空段会被忽略（例如结尾多写一个逗号），但解析结果的数量必须等于秩。
+func ParseCoords(s string, rank int) ([]uint64, error) {
+	parts := strings.FieldsFunc(s, func(r rune) bool {
+		return r == ',' || r == '，' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	out := make([]uint64, 0, len(parts))
+	for i, p := range parts {
+		v, err := strconv.ParseUint(strings.TrimSpace(p), 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("第 %d 个坐标 %q 不是合法下标", i+1, p)
 		}
+		out = append(out, v)
 	}
-
-	if dt.IsInteger() {
-		s := strconv.FormatFloat(v, 'f', 0, 64)
-		if math.Abs(v) > approxThreshold {
-			return s + " ≈"
-		}
-		return s
+	if len(out) != rank {
+		return nil, fmt.Errorf("坐标需要 %d 个值，实际 %d 个", rank, len(out))
 	}
-
-	bits := 64
-	if dt.Size == 4 {
-		bits = 32
-	}
-	return strconv.FormatFloat(v, 'g', -1, bits)
-}
-
-// enumName 在枚举成员表里查找数值对应的名称。
-func enumName(dt hdf5.DatatypeInfo, v float64) (string, bool) {
-	for _, m := range dt.EnumMembers {
-		if float64(m.Value) == v {
-			return m.Name, true
-		}
-	}
-	return "", false
-}
-
-// tooLargeString 说明字符串/复合数据集为何不能整份展示。
-//
-// 解析库只提供整份读取，没有按行切片，所以这类数据集在超过上限时
-// 只能拒绝并告诉用户下一步能做什么（spec 的「超大切片请求被拒绝」）。
-func tooLargeString(total int) error {
-	return fmt.Errorf("%w：该数据集有 %d 个元素，超过字符串视图上限 %d；"+
-		"请改用元数据视图查看结构", hdf5.ErrTooLarge, total, stringElemLimit)
+	return out, nil
 }

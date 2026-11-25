@@ -114,6 +114,13 @@ type App struct {
 	Table     TableState
 	TableList ui.ListState
 
+	// 快速定位的输入状态：秩不超过 quickLocateMax 时逐维写入 locateBoxes，
+	// 否则用 locateText 保存逗号分隔的坐标。
+	locateBoxes [quickLocateMax]string
+	locateText  string
+	locateErr   string
+	locateReady bool
+
 	// tableKey 是当前已就绪结果对应的请求，
 	// inflight 是正在读取的请求（未完成时为 nil）。
 	//
@@ -167,6 +174,10 @@ func (a *App) reset() {
 	a.Err = nil
 	a.Table = TableState{}
 	a.TableList = ui.ListState{}
+	a.locateBoxes = [quickLocateMax]string{}
+	a.locateText = ""
+	a.locateErr = ""
+	a.locateReady = false
 	a.tableKey = tableKey{}
 	a.inflight = nil
 	a.pageCache = make(map[string]pageEntry)

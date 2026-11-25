@@ -74,6 +74,29 @@ func TestOpenShowsSplitAndStatus(t *testing.T) {
 	}
 }
 
+// TestTopBarAvoidsWindowButtons 断言隐藏标题栏时顶栏为窗口按钮留出空间。
+func TestTopBarAvoidsWindowButtons(t *testing.T) {
+	a, tt := newTester(t)
+	tt.SetTitleBar(ui.TitleBar{Height: 46, Right: 138})
+	openFixture(t, a, tt, "basic.h5")
+
+	open, ok := tt.Find("打开")
+	if !ok {
+		t.Fatalf("顶栏缺少打开按钮，texts %q", tt.Texts())
+	}
+	// 1200 宽窗口右侧 138 属于系统窗口按钮，打开按钮必须在其左侧。
+	if open.X+open.W > 1200-138 {
+		t.Fatalf("打开按钮侵入了窗口按钮区域：%+v", open)
+	}
+	mark, ok := tt.Find("GoHdfView")
+	if !ok {
+		t.Fatalf("顶栏缺少标题，texts %q", tt.Texts())
+	}
+	if mark.Y+mark.H > 46 {
+		t.Fatalf("顶栏标题应位于 46px 内：%+v", mark)
+	}
+}
+
 // 选中组时「数据」标签置灰并自动落到「元数据」（viewer-shell 视图切换）。
 func TestGroupDisablesDataTab(t *testing.T) {
 	a, tt := newTester(t)

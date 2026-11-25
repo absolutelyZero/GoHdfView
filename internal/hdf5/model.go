@@ -63,6 +63,9 @@ type Node struct {
 	// 它在节点构造时算好：树每帧都会为可见行取这个字符串，
 	// 而 Shape 每次调用都要重新解码数据集描述符。
 	ShapeText string
+	// Rank 是数据集的秩，在构造节点时与 ShapeText 一起缓存。
+	// 非数据集节点为 0。
+	Rank int
 
 	group *libhdf5.Group
 	ds    *libhdf5.Dataset
