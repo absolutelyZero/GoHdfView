@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -14,6 +15,15 @@ import (
 
 	"gohdfview/internal/hdf5"
 )
+
+// macOS 的全选快捷键是 Cmd+A，其它平台是 Ctrl+A（与 tree_test.go 的修饰键处理一致）。
+var selectAllMod = ui.Ctrl
+
+func init() {
+	if runtime.GOOS == "darwin" {
+		selectAllMod = ui.Cmd
+	}
+}
 
 // fakeReader 记录每次读取请求，并可注入错误或延迟。
 type fakeReader struct {
@@ -803,7 +813,7 @@ func TestLocateInputJumpsToPage(t *testing.T) {
 			t.Fatalf("Click %s: %v", label, err)
 		}
 		tt.Frame()
-		tt.Key(ui.Ctrl, ui.KeyA)
+		tt.Key(selectAllMod, ui.KeyA)
 		tt.Type(value)
 		tt.Key(0, ui.KeyEnter)
 		tt.Frame()
@@ -841,7 +851,7 @@ func TestLocateHighRankUsesSingleInput(t *testing.T) {
 		t.Fatalf("Click 坐标输入: %v", err)
 	}
 	tt.Frame()
-	tt.Key(ui.Ctrl, ui.KeyA)
+	tt.Key(selectAllMod, ui.KeyA)
 	tt.Type("1, 1, 0, 99, 49")
 	tt.Key(0, ui.KeyEnter)
 	tt.Frame()
@@ -865,7 +875,7 @@ func TestLocateErrorKeepsPage(t *testing.T) {
 		t.Fatalf("Click D0 输入: %v", err)
 	}
 	tt.Frame()
-	tt.Key(ui.Ctrl, ui.KeyA)
+	tt.Key(selectAllMod, ui.KeyA)
 	tt.Type("5000")
 	tt.Key(0, ui.KeyEnter)
 	tt.Frame()
@@ -880,7 +890,7 @@ func TestLocateErrorKeepsPage(t *testing.T) {
 		t.Fatalf("定位失败不应阻塞表格，texts %q", tt.Texts())
 	}
 
-	tt.Key(ui.Ctrl, ui.KeyA)
+	tt.Key(selectAllMod, ui.KeyA)
 	tt.Type("abc")
 	tt.Key(0, ui.KeyEnter)
 	tt.Frame()
