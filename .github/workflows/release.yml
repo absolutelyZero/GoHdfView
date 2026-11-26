@@ -223,4 +223,6 @@ jobs:
             artifacts/GoHdfView-macos-amd64/*.sha256
             artifacts/GoHdfView-macos-arm64/*.zip
             artifacts/GoHdfView-macos-arm64/*.sha256
+          # 同一版本重新发布时覆盖同名资源（Windows zip/sha256 已存在）。
+          overwrite_files: true
           generate_release_notes: true
