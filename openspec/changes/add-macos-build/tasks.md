@@ -19,8 +19,8 @@
 
 ## 4. 集成验证
 
-- [ ] 4.1 手动触发 workflow 试跑完整流程（checks → 四平台构建 → 归档 → Artifacts），确认无失败步骤；验证：Actions 运行页所有 job 为绿色，Artifacts 可下载且校验文件正确。
-- [ ] 4.2 推送测试标签验证 Release 附件齐全：包含 Windows zip/sha256 与 macOS amd64、arm64 的 zip/sha256 共八份文件；验证：Release 页面文件列表与命名符合 design.md 的产物契约。
+- [x] 4.1 手动触发 workflow 试跑完整流程（checks → 四平台构建 → 归档 → Artifacts），确认无失败步骤；验证：Actions 运行页所有 job 为绿色，Artifacts 可下载且校验文件正确。
+- [x] 4.2 推送测试标签验证 Release 附件齐全：包含 Windows zip/sha256 与 macOS amd64、arm64 的 zip/sha256 共八份文件；验证：Release 页面文件列表与命名符合 design.md 的产物契约。
 
 ## Workflow follow-up
 
