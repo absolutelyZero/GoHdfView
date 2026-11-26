@@ -1,4 +1,4 @@
-# 自动打包：推送 v* 标签后跑检查、构建 Windows amd64 产物并发布 GitHub Release。
+# 自动打包：推送 v* 标签后跑检查、构建 Windows 与 macOS（amd64/arm64）产物并发布 GitHub Release。
 # 也可在 Actions 页手动触发（workflow_dispatch），只上传构建产物到本次运行，
 # 不创建 Release，用来在打标签前试跑打包流程。
 name: Release
@@ -46,16 +46,157 @@ jobs:
       - name: Package
         shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="dev-${GITHUB_SHA::7}"
+          fi
           export ZIP="GoHdfView-${VERSION}-windows-amd64.zip"
           cd build/windows-amd64
           powershell -NoProfile -Command 'Compress-Archive -Path GoHdfView.exe -DestinationPath "$env:ZIP" -Force'
           sha256sum "$ZIP" > "$ZIP.sha256"
           ls -l
 
-      # 标签触发：发布 Release（自动附 commit 列表）。
+      # 归档交给 publish job 统一发布，避免多个 job 并发写同一个 Release。
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoHdfView-windows-amd64
+          path: |
+            build/windows-amd64/*.zip
+            build/windows-amd64/*.sha256
+          if-no-files-found: error
+
+  macos-amd64:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: |
+          go vet ./...
+          go tool mygo vet
+
+      - name: Test
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./...
+
+      # mygo 在 macOS 产出 build/darwin-amd64/GoHdfView.app；
+      # -skip-dmg 跳过磁盘镜像，只保留应用包，随后由 Package 步骤压成 zip。
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOFLAGS: "-tags=mygo_nowebview"
+        run: go tool mygo build -skip-dmg -platform darwin/amd64
+
+      - name: Package
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="dev-${GITHUB_SHA::7}"
+          fi
+          OUT="build/darwin-amd64"
+          APP="$(find "$OUT" -maxdepth 1 -type d -name 'GoHdfView.app' -print -quit)"
+          if [[ -z "$APP" ]]; then
+            echo "::error::未找到 $OUT/GoHdfView.app，请检查 mygo build 输出"
+            exit 1
+          fi
+          ZIP="$OUT/GoHdfView-${VERSION}-macos-amd64.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+          shasum -a 256 "$ZIP" > "$ZIP.sha256"
+          ls -l "$OUT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoHdfView-macos-amd64
+          path: |
+            build/darwin-amd64/*.zip
+            build/darwin-amd64/*.sha256
+          if-no-files-found: error
+
+  macos-arm64:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: |
+          go vet ./...
+          go tool mygo vet
+
+      - name: Test
+        env:
+          CGO_ENABLED: "0"
+        run: go test ./...
+
+      # mygo 在 macOS 产出 build/darwin-arm64/GoHdfView.app；
+      # -skip-dmg 跳过磁盘镜像，只保留应用包，随后由 Package 步骤压成 zip。
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+          GOFLAGS: "-tags=mygo_nowebview"
+        run: go tool mygo build -skip-dmg -platform darwin/arm64
+
+      - name: Package
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="dev-${GITHUB_SHA::7}"
+          fi
+          OUT="build/darwin-arm64"
+          APP="$(find "$OUT" -maxdepth 1 -type d -name 'GoHdfView.app' -print -quit)"
+          if [[ -z "$APP" ]]; then
+            echo "::error::未找到 $OUT/GoHdfView.app，请检查 mygo build 输出"
+            exit 1
+          fi
+          ZIP="$OUT/GoHdfView-${VERSION}-macos-arm64.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "$ZIP"
+          shasum -a 256 "$ZIP" > "$ZIP.sha256"
+          ls -l "$OUT"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoHdfView-macos-arm64
+          path: |
+            build/darwin-arm64/*.zip
+            build/darwin-arm64/*.sha256
+          if-no-files-found: error
+
+  # 等三个构建 job 全部完成后统一发布，避免并发写同一个 Release 产生竞态。
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [windows-amd64, macos-amd64, macos-arm64]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: GoHdfView-*
+
+      - name: List artifacts
+        run: find artifacts -type f -print
+
       - name: Publish release
-        if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           name: "GoHdfView ${{ github.ref_name }}"
@@ -65,21 +206,21 @@ jobs:
             - 对象树行高由 26px 增至 28px，图标与字号同步增大，长时间浏览更易辨认
             - 选中行按设计稿高亮：琥珀色类型图标、亮色加粗名称、暖灰维度概要与可辨识的行底色
             - 新增应用标记与窗口/任务栏图标，顶栏与空状态统一使用新图形
+            - 新增 macOS（Intel amd64 / Apple Silicon arm64）构建产物，随标签一并发布
 
-            打开 HDF5 文件，浏览对象树、元数据与属性；数据集支持分页表格与灰度图像两种视图。纯 Go 实现，不依赖 HDF5 C 库与 WebView2，单文件 exe 双击即用；只读，不修改被打开的文件。
+            打开 HDF5 文件，浏览对象树、元数据与属性；数据集支持分页表格与灰度图像两种视图。纯 Go 实现，不依赖 HDF5 C 库与 WebView2，单文件 exe / 应用包双击即用；只读，不修改被打开的文件。
 
-            下载 zip 解压后运行 `GoHdfView.exe`，也可从命令行传入文件路径。仅支持 HDF5（不支持 HDF4），当前验证平台为 Windows amd64。未签名 exe 在部分 Windows 上首次运行会提示“未知发布者”，属预期行为。
+            平台产物（解压后运行）：
+
+            - Windows amd64：GoHdfView.exe，也可从命令行传入文件路径；未签名 exe 在部分 Windows 上首次运行会提示「未知发布者」，属预期行为。
+            - macOS Intel（amd64）与 Apple Silicon（arm64）：GoHdfView.app。未签名且未经公证，首次打开需右键 → 打开，或在「系统设置 → 隐私与安全性」中允许；按芯片选对应架构的包。
+
+            仅支持 HDF5（不支持 HDF4）。每个 zip 都附有同名 .sha256 校验文件，可用 sha256sum -c（macOS 为 shasum -a 256 -c）校验。
           files: |
-            build/windows-amd64/*.zip
-            build/windows-amd64/*.sha256
+            artifacts/GoHdfView-windows-amd64/*.zip
+            artifacts/GoHdfView-windows-amd64/*.sha256
+            artifacts/GoHdfView-macos-amd64/*.zip
+            artifacts/GoHdfView-macos-amd64/*.sha256
+            artifacts/GoHdfView-macos-arm64/*.zip
+            artifacts/GoHdfView-macos-arm64/*.sha256
           generate_release_notes: true
-
-      # 手动触发：产物挂在本次运行的 Artifacts 里，不创建 Release。
-      - name: Upload artifact
-        if: github.ref_type != 'tag'
-        uses: actions/upload-artifact@v4
-        with:
-          name: GoHdfView-windows-amd64
-          path: |
-            build/windows-amd64/*.zip
-            build/windows-amd64/*.sha256

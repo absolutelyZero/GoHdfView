@@ -37,7 +37,7 @@ GoHdfView 侧重「快速打开并精确浏览大数据集」，与 HDFView 相�
 | `CGO_ENABLED=0` | 纯 Go 构建，不依赖 HDF5 C 库。 |
 | 可写的 `GOMODCACHE` / `GOPATH` / `GOCACHE` / `TMP` | 默认缓存与临时目录不可写时（常见于受限的 Windows 账户或沙箱），需要指向可写目录。 |
 
-只支持 **Windows**（当前验证平台）与 **HDF5**（不支持 HDF4）。
+支持 **Windows amd64** 与 **macOS（amd64 / arm64）** 三个平台产物，并支持 **HDF5**（不支持 HDF4）。macOS 产物由 GitHub Actions 在打标签时自动构建并发布，也可按下方命令本地构建。
 
 ## 从干净 shell 构建
 
@@ -74,13 +74,33 @@ GOFLAGS=-tags=mygo_nowebview CGO_ENABLED=0 go tool mygo build -skip-installer
 
 `-skip-installer` 用来跳过 Windows 安装包的生成；不需要安装包时加上它，可以避免下载 NSIS 到 `%LOCALAPPDATA%\mygo`。
 
+### 在 macOS 上构建
+
+macOS 无需 cgo 或额外工具链，可直接交叉编译两个架构（在 macOS 或任意能运行 Go 的机器上均可）：
+
+```bash
+# Intel（amd64）
+GOFLAGS=-tags=mygo_nowebview CGO_ENABLED=0 go tool mygo build -skip-dmg -platform darwin/amd64
+# Apple Silicon（arm64）
+GOFLAGS=-tags=mygo_nowebview CGO_ENABLED=0 go tool mygo build -skip-dmg -platform darwin/arm64
+```
+
+产物分别在 `build/darwin-amd64/GoHdfView.app` 与 `build/darwin-arm64/GoHdfView.app`。`-skip-dmg` 跳过磁盘镜像生成；需要 dmg 时去掉该参数。可用 `open build/darwin-arm64/GoHdfView.app` 启动。
+
+发布包由 CI 用 `ditto -c -k --sequesterRsrc --keepParent` 压成 zip，并附 `.sha256` 校验文件。本地校验：
+
+```bash
+shasum -a 256 -c GoHdfView-<version>-macos-arm64.zip.sha256
+```
+
 ### 产物依赖自检
+
 
 ```bash
 go version -m build/windows-amd64/GoHdfView.exe
 ```
 
-应看到 `CGO_ENABLED=0`、`-tags=mygo_nowebview,mygo_nodownload,mygo_noinspector`，依赖只有 `purego`、`mygo`、`go-text/typesetting`、`scigolib/hdf5` 与 `golang.org/x/{image,net,text}`——没有 HDF5 C 库，也没有 WebView2；PE 导入表只有 `kernel32.dll`。验证细节见 [`docs/verification.md`](docs/verification.md)。
+应看到 `CGO_ENABLED=0`、`-tags=mygo_nowebview,mygo_nodownload,mygo_noinspector`，依赖只有 `purego`、`mygo`、`go-text/typesetting`、`scigolib/hdf5` 与 `golang.org/x/{image,net,text}`——没有 HDF5 C 库，也没有 WebView2；PE 导入表只有 `kernel32.dll`。macOS 产物同样不含 HDF5 C 库与 WebView2，可用 `otool -L build/darwin-arm64/GoHdfView.app/Contents/MacOS/GoHdfView` 检查动态库依赖。验证细节见 [`docs/verification.md`](docs/verification.md)。
 
 ## 开发
 
@@ -144,7 +164,7 @@ go tool mygo vet              # 检查把 build 值存进结构体这类 MyGo �
 - 只读，且只支持 HDF5；打开 HDF4 文件会明确提示「仅支持 HDF5」。
 - 不支持 SWMR 与并行 I/O。
 - 软链接与外部链接成员不显示：解析库在加载阶段跳过非硬链接，也未暴露链接种类；应用侧已备好链接节点的字形与 `NodeKind`，等库补齐后即可展示。
-- 仅在 Windows 上验证；macOS 与 Linux 未做验证。
+- Windows amd64 与 macOS（amd64 / arm64）已纳入自动构建与发布；Linux 未做验证。macOS 产物未签名、未经公证。
 
 ## 许可
 
