@@ -20,7 +20,8 @@ var (
 	ColMute     = ui.Hex("#6E767D")
 	ColFaint    = ui.Hex("#4C545C")
 	ColAccent   = ui.Hex("#E0A64A") // 琥珀强调色
-	ColSel      = ui.Hex("#1B2024")
+	ColSelRow   = ui.Hex("#191E22") // 树选中行底色
+	ColSelDim   = ui.Hex("#8A7B5A") // 选中行维度概要色
 	ColChip     = ui.Hex("#151A1E")
 	ColChipLine = ui.Hex("#232A2F")
 	ColHeadBg   = ui.Hex("#0C0F11") // 表头底色
@@ -50,9 +51,9 @@ func Theme() *ui.Theme {
 		t.Border = ColLine
 		t.Text = ColText
 		t.TextMuted = ColDim
-		// 列表与树的选中行直接取主题强调色，因此这里放设计稿的选中底色；
+		// 列表与树的选中行直接取主题强调色，因此这里放设计稿的选中行底色；
 		// 琥珀色强调由界面代码显式使用 ColAccent。
-		t.Accent = ColSel
+		t.Accent = ColSelRow
 		t.AccentHover = ui.Hex("#232A2F")
 		t.AccentPressed = ui.Hex("#2A3036")
 		t.AccentText = ColText

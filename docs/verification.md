@@ -164,3 +164,16 @@
 | 未知第三方过滤器 | h5py 无法注册未知过滤器 | 用构造的 `FilterInfo` 做代码级断言 |
 | 原生菜单点击、文件对话框、拖放事件 | headless 测试环境无原生窗口 | 只验证代码路径与文案；真机已用命令行参数与句柄占用验证关键路径 |
 | 真实窗口像素截图 | 会话无桌面合成，`Screen` 抓图为全白，`PrintWindow` 报 `A required privilege is not held by the client` | 截图改用 `ui.Tester.Image()` 在 headless 下渲染，见 `docs/screenshots/` |
+
+## larger-tree-rows-and-selection-highlight（2026-11-26）
+
+本变更的行高、字号与选中高亮由 `internal/view/tree_test.go` 的 `TestTreeRowHeight`、
+`TestTreeSelectedHighlight` 自动断言；以下为真机人工检查项。
+
+| 检查项 | 期望 |
+| --- | --- |
+| 树行高度 | 每行 28px，行内图标与文字比旧版大一号 |
+| 行内尺寸 | 名称字号 13.5、维度概要 11.5、链接标注 12；展开箭头 12×12、类型图标 13×13 |
+| 选中行高亮 | 行底色 `#191E22`、类型图标琥珀色 `#E0A64A`、名称亮色 `#E7EAED` 且加粗、维度概要暖灰 `#8A7B5A` |
+| 切换选中 | 原行恢复普通样式，同一时刻最多一行高亮 |
+| 其余界面 | 侧栏筛选框、表格数据视图、面包屑、属性列表的字号与配色保持不变 |

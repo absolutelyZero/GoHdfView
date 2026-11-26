@@ -2,6 +2,7 @@ package view
 
 import (
 	"fmt"
+	"image"
 	"runtime"
 	"testing"
 
@@ -90,7 +91,50 @@ func newTester(t *testing.T, src *fakeSource) (*App, *ui.Tester) {
 	return app, ui.NewTester(testView(app), 900, 600)
 }
 
-// TestTreeRowHeight 断言树行高 26px，与设计稿一致。
+// themedTree 在测试里只画对象树并套用应用主题：避免面包屑出现同名文本，
+// 让 tt.Find 取到树行本身，同时取到设计稿的底色与强调色。
+func themedTree(app *App) func(c *ui.Context) {
+	return func(c *ui.Context) {
+		c.SetTheme(Theme())
+		ui.Column(c).Fill().Padding(12).Children(func() {
+			Tree(c, app)
+		})
+	}
+}
+
+// pixelAt 返回图像在 DIP 坐标 (x, y) 处的颜色。
+func pixelAt(img *image.RGBA, x, y float32) ui.Color {
+	p := img.RGBAAt(int(x), int(y))
+	return ui.RGB(p.R, p.G, p.B)
+}
+
+// sameRGB 报告两色在每个通道的差值都不超过 tol。
+func sameRGB(a, b ui.Color, tol int) bool {
+	diff := func(x, y uint8) int {
+		if x > y {
+			return int(x - y)
+		}
+		return int(y - x)
+	}
+	return diff(a.R, b.R) <= tol && diff(a.G, b.G) <= tol && diff(a.B, b.B) <= tol
+}
+
+// hasAccent 报告矩形内是否有接近 ColAccent 的像素：选中行的类型图标为
+// 琥珀色，描边抗锯齿后仍保留接近纯色的像素，普通文字的抗锯齿边缘达不到
+// 这个饱和度。
+func hasAccent(img *image.RGBA, r ui.Rect) bool {
+	for y := int(r.Y); y < int(r.Y+r.H); y++ {
+		for x := int(r.X); x < int(r.X+r.W); x++ {
+			c := img.RGBAAt(x, y)
+			if sameRGB(ui.RGB(c.R, c.G, c.B), ColAccent, 20) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// TestTreeRowHeight 断言树行高 28px，与设计稿一致。
 func TestTreeRowHeight(t *testing.T) {
 	treeFilter, treeApplied = "", ""
 	src := newFake()
@@ -114,11 +158,71 @@ func TestTreeRowHeight(t *testing.T) {
 	if !ok {
 		t.Fatalf("缺少第一层节点，texts %q", tt.Texts())
 	}
-	if d := deep.Y - grpRect.Y; d < 25 || d > 27 {
-		t.Fatalf("行高应为 26px，实际 %.1f", d)
+	if d := deep.Y - grpRect.Y; d < 27 || d > 29 {
+		t.Fatalf("行高应为 28px，实际 %.1f", d)
 	}
-	if d := top.Y - deep.Y; d < 25 || d > 27 {
-		t.Fatalf("行高应为 26px，实际 %.1f", d)
+	if d := top.Y - deep.Y; d < 27 || d > 29 {
+		t.Fatalf("行高应为 28px，实际 %.1f", d)
+	}
+}
+
+// TestTreeSelectedHighlight 断言选中行按设计稿高亮：类型图标为琥珀色
+// ColAccent，行底色为 ColSelRow；切换选中后原行恢复普通样式。
+func TestTreeSelectedHighlight(t *testing.T) {
+	treeFilter, treeApplied = "", ""
+	defer func() { treeFilter, treeApplied = "", "" }()
+
+	src := newFake()
+	src.addDataset(src.root, "one")
+	src.addDataset(src.root, "two")
+	app := NewApp()
+	if err := app.SetSource(src); err != nil {
+		t.Fatalf("SetSource: %v", err)
+	}
+	tt := ui.NewTester(themedTree(app), 900, 600)
+
+	if err := app.SelectPath("/one"); err != nil {
+		t.Fatalf("SelectPath: %v", err)
+	}
+	tt.Frame()
+
+	one, ok := tt.Find("one")
+	if !ok {
+		t.Fatalf("缺少 one 行，texts %q", tt.Texts())
+	}
+	// tt.Find 给出整行矩形：扫描整行寻找琥珀色的类型图标。
+	band := ui.Rect{X: 0, Y: one.Y, W: 900, H: one.H}
+	if !hasAccent(tt.Image(), band) {
+		t.Fatalf("选中行 one 的类型图标应为琥珀色 ColAccent")
+	}
+	// 行右侧的空白处应填满选中行的底色。
+	if got := pixelAt(tt.Image(), 820, one.Y+one.H/2); !sameRGB(got, ColSelRow, 1) {
+		t.Fatalf("选中行 one 的底色应为 ColSelRow %v，实际 %v", ColSelRow, got)
+	}
+
+	if err := app.SelectPath("/two"); err != nil {
+		t.Fatalf("SelectPath: %v", err)
+	}
+	tt.Frame()
+
+	one, ok = tt.Find("one")
+	if !ok {
+		t.Fatalf("切换选中后缺少 one 行，texts %q", tt.Texts())
+	}
+	two, ok := tt.Find("two")
+	if !ok {
+		t.Fatalf("切换选中后缺少 two 行，texts %q", tt.Texts())
+	}
+	band = ui.Rect{X: 0, Y: one.Y, W: 900, H: one.H}
+	if hasAccent(tt.Image(), band) {
+		t.Fatalf("切换选中后原行 one 不应再有琥珀色图标")
+	}
+	if got := pixelAt(tt.Image(), 820, one.Y+one.H/2); sameRGB(got, ColSelRow, 1) {
+		t.Fatalf("切换选中后原行 one 的底色应恢复普通样式，实际仍为 %v", got)
+	}
+	twoBand := ui.Rect{X: 0, Y: two.Y, W: 900, H: two.H}
+	if !hasAccent(tt.Image(), twoBand) {
+		t.Fatalf("切换选中后 two 行的类型图标应为琥珀色")
 	}
 }
 

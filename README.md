@@ -113,7 +113,7 @@ openspec/                   规格与变更记录（OpenSpec）
 ## 测试与验证
 
 ```bash
-CGO_ENABLED=0 go test ./...   # 124 个用例，覆盖访问层、各视图与集成路径
+CGO_ENABLED=0 go test ./...   # 覆盖访问层、各视图与集成路径
 go vet ./...
 go tool mygo vet              # 检查把 build 值存进结构体这类 MyGo 专属错误
 ```

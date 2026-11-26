@@ -16,7 +16,7 @@ var (
 	treeSelID   hdf5.NodeID
 )
 
-// Tree 画 A · 仪器风格的侧栏对象树：筛选框 + 26px 行高的树，
+// Tree 画 A · 仪器风格的侧栏对象树：筛选框 + 28px 行高的树，
 // 行内依次是展开箭头、类型图标、名称与维度概要。
 func Tree(c *ui.Context, app *App) {
 	if !app.HasDocument() {
@@ -60,23 +60,23 @@ func Tree(c *ui.Context, app *App) {
 		row++
 		on := row == app.TreeRow
 		// 设计稿的缩进：基础 10px，每层加 15px，箭头与图标之间各留 6px。
-		// 行高由这个 26px 的占位撑起：List 的 RowHeight 只作用于表格。
-		ui.Box(c).Width(float32(10 + r.Depth*15)).Height(26).Shrink(0)
+		// 行高由这个 28px 的占位撑起：List 的 RowHeight 只作用于表格。
+		ui.Box(c).Width(float32(10 + r.Depth*15)).Height(28).Shrink(0)
 		if r.Branch {
 			a := r.Arrow()
-			a.Size(11, 11).Shrink(0).Children(func() {
+			a.Size(12, 12).Shrink(0).Children(func() {
 				ic := IconChevron
 				if r.Open {
 					ic = IconChevronDown
 				}
-				ui.Icon(c, ic).Size(11, 11).TextColor(pick(on, ColText, ColMute))
+				ui.Icon(c, ic).Size(12, 12).TextColor(pick(on, ColText, ColMute))
 			})
 		} else {
-			ui.Box(c).Width(11).Height(11).Shrink(0)
+			ui.Box(c).Width(12).Height(12).Shrink(0)
 		}
 		ui.Box(c).Width(6).Height(1).Shrink(0)
 		if n := app.nodes[app.Tree.Item(row)]; n != nil {
-			kindIcon(c, n, pick(on, ColText, ColMute))
+			kindIcon(c, n, pick(on, ColAccent, ColMute))
 		}
 		ui.Box(c).Width(6).Height(1).Shrink(0)
 	}
@@ -90,13 +90,16 @@ func Tree(c *ui.Context, app *App) {
 				return
 			}
 			on := row == app.TreeRow
-			ui.Text(c, n.Name).FontSize(12.5).TextColor(pick(on, ColText, ColName)).SingleLine()
+			name := ui.Text(c, n.Name).FontSize(13.5).TextColor(pick(on, ColText, ColName)).SingleLine()
+			if on {
+				name.FontWeight(500)
+			}
 			if s := n.DimensionSummary(); s != "" {
 				ui.Spacer(c)
-				ui.Text(c, s).Font(FontMono).FontSize(10.5).TextColor(ColMute).SingleLine()
+				ui.Text(c, s).Font(FontMono).FontSize(11.5).TextColor(pick(on, ColSelDim, ColMute)).SingleLine()
 			}
 			if n.LinkInfo != "" {
-				ui.Text(c, "→ "+n.LinkInfo).FontSize(11).TextColor(ColMute).SingleLine()
+				ui.Text(c, "→ "+n.LinkInfo).FontSize(12).TextColor(ColMute).SingleLine()
 			}
 			ui.Box(c).Width(10).Shrink(0)
 		})
@@ -197,7 +200,7 @@ func subtreeMatches(app *App, id hdf5.NodeID, depth int) bool {
 	return false
 }
 
-// kindIcon 用设计稿的 12×12 线条图标表示节点类型：
+// kindIcon 用设计稿的 13×13 线条图标表示节点类型：
 // 组是 folder，二维数据集是 image，其余数据集是 table-2。
 func kindIcon(c *ui.Context, n *hdf5.Node, col ui.Color) ui.Element {
 	ic := IconTable
@@ -213,7 +216,7 @@ func kindIcon(c *ui.Context, n *hdf5.Node, col ui.Color) ui.Element {
 	case hdf5.KindSoftLink, hdf5.KindExternalLink:
 		ic = IconLink
 	}
-	return ui.Icon(c, ic).Size(12, 12).TextColor(col)
+	return ui.Icon(c, ic).Size(13, 13).TextColor(col)
 }
 
 func pick(on bool, a, b ui.Color) ui.Color {

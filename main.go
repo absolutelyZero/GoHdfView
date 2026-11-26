@@ -16,7 +16,7 @@ import (
 )
 
 // appVersion 是应用自身的版本，与 mygo.json 的 version 保持一致。
-const appVersion = "0.1.0"
+const appVersion = "0.1.1"
 
 // 右侧工作区的三个标签页（viewer-shell 的「视图切换」）。
 const (
@@ -273,11 +273,17 @@ func (a *app) topBar(c *ui.Context) {
 	}
 	bar.Draw(func(p *ui.Painter, r ui.Rect) { view.Hairline(p, r, view.ColLine) })
 	bar.Children(func() {
-		mark := ui.Box(c).Size(20, 20).Shrink(0).Radius(4).
-			Background(view.ColAccent).Center()
-		mark.Children(func() {
-			ui.Text(c, "G").FontSize(11).FontWeight(700).TextColor(view.ColBg)
-		})
+		// 标记直接用 logo.pen 导出的位图：镜片里嵌对象树，与窗口图标同源。
+		if bm := view.Mark(); bm != nil {
+			ui.Image(c, bm).Fit(ui.Contain).Size(24, 24).Shrink(0)
+		} else {
+			// 位图解码失败时退回文字方块，界面不至于缺角。
+			mark := ui.Box(c).Size(20, 20).Shrink(0).Radius(4).
+				Background(view.ColAccent).Center()
+			mark.Children(func() {
+				ui.Text(c, "G").FontSize(11).FontWeight(700).TextColor(view.ColBg)
+			})
+		}
 		ui.Text(c, "GoHdfView").FontSize(13).FontWeight(600).
 			TextColor(view.ColText).SingleLine()
 		name := ""
@@ -375,6 +381,10 @@ func (a *app) helpMenu(m *ui.Menu) {
 // emptyState 是没有打开文件时的界面。
 func (a *app) emptyState(c *ui.Context) {
 	ui.Column(c).Fill().Grow(1).Center().Gap(14).Padding(24).Children(func() {
+		// 空状态用琥珀色标记：与顶栏同一图形，只在没有内容时点亮。
+		if bm := view.MarkAccent(); bm != nil {
+			ui.Image(c, bm).Fit(ui.Contain).Size(56, 56)
+		}
 		ui.Text(c, "打开 HDF5 文件或把文件拖入窗口").FontSize(13).
 			TextColor(view.ColDim)
 		view.AccentButton(c, "打开…", func() { a.openDialog() })
@@ -562,7 +572,7 @@ func (a *app) modeSwitch(c *ui.Context) {
 			s := seg.Segment(i).Padding(4, 9).Radius(4).Gap(5).
 				AlignItems(ui.Center).Justify(ui.Center)
 			if on {
-				s.Background(view.ColSel)
+				s.Background(view.ColSelRow)
 			}
 			s.Children(func() {
 				ui.Icon(c, icons[i]).Size(11, 11).TextColor(col)
@@ -688,6 +698,8 @@ func main() {
 		}
 		a.win = mygo.NewWindow(opts)
 		a.win.SetWindowButtonsTheme(mygo.ThemeDark)
+		// 窗口与任务栏图标用 logo.pen 导出的应用图标，与顶栏标记同源。
+		_ = a.win.SetIcon(view.IconPNG())
 
 		// 大切片在工作 goroutine 上读，结果经 Window.Update 写回，
 		// 避免读取期间界面不响应（design.md 决策 4）。
