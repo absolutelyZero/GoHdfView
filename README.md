@@ -2,9 +2,19 @@
 
 用 Go 与 [MyGo](https://mygo.run) 复刻的 HDFView 只读阅读器：打开 HDF5 文件，浏览对象树、查看元数据与属性、以表格或图像方式查看数据集。
 
-**只读**：本项目不提供任何写入、编辑或另存为能力，也不会修改被打开的文件。写入 API 仅出现在测试夹具生成脚本 `internal/hdf5/testdata/gen.go`（`//go:build ignore`，不参与常规构建），并由 `internal/hdf5/readonly_test.go` 扫描源码来保证这一点。
+- **只读**：本项目不提供任何写入、编辑或另存为能力，也不会修改被打开的文件。写入 API 仅出现在测试夹具生成脚本 `internal/hdf5/testdata/gen.go`（`//go:build ignore`，不参与常规构建），并由 `internal/hdf5/readonly_test.go` 扫描源码来保证这一点。
+- **纯 Go 实现**：不依赖 HDF5 C 库与 WebView2；当前只支持 Windows 与 HDF5（不支持 HDF4）。
 
-![空状态](docs/screenshots/empty-state.png)
+## 与 HDFView 的差异
+
+GoHdfView 侧重「快速打开并精确浏览大数据集」，与 HDFView 相比主要有两点体验差异：
+
+| 关注点 | HDFView | GoHdfView |
+| --- | --- | --- |
+| 打开数据集 | 通常需要载入整个 dataset，大文件打开或跳转时容易卡顿 | 按页窗口化读取（默认 100 行 × 50 列），分页打开与翻页都不会引起卡顿，已读页还有缓存 |
+| 定位数据 | 主要依靠滚动查找目标单元格 | 直接输入坐标快速定位，坐标长度等于数据集秩，超大秩用逗号分隔输入 |
+
+此外，对象树采用惰性加载并支持方向键导航，上万成员的分组也不会卡住界面。
 
 ## 功能
 
@@ -17,13 +27,7 @@
 | 图像视图 | 二维数值数据集渲染为灰度图，带值域输入与色标；大数组按步长降采样（`ReadStrided`），读取量只与像素数有关。非数值或非二维数据集会说明不可用原因。 |
 | 外壳 | 左树 / 右工作区 / 底部状态栏；菜单与快捷键（`Ctrl+O` 打开、`Ctrl+W` 关闭、`Ctrl+1/2/3` 切视图）；系统文件对话框、拖放打开、命令行参数打开；错误提示非模态且可关闭。 |
 
-![对象树与元数据](docs/screenshots/tree-and-metadata.png)
-
-![数据表格](docs/screenshots/data-table.png)
-
-![图像视图](docs/screenshots/image-view.png)
-
-更多走查记录（夹具清单、逐 scenario 结论、受库限制项）见 [`docs/verification.md`](docs/verification.md)。
+手工走查记录（夹具清单、逐 scenario 结论、受库限制项）见 [`docs/verification.md`](docs/verification.md)。
 
 ## 构建前提
 
@@ -105,7 +109,7 @@ main.go                     应用入口：窗口、菜单、命令行参数
 internal/hdf5/              只读 HDF5 访问层（解析库的唯一使用者）
 internal/hdf5/testdata/     测试夹具与生成脚本（gen.go、gen_h5py.py）
 internal/view/              MyGo 界面：对象树、元数据、表格、图像
-docs/                       验证记录与界面截图
+docs/                       验证记录（verification.md）
 resources/icon.png          应用图标
 openspec/                   规格与变更记录（OpenSpec）
 ```
@@ -122,7 +126,7 @@ go tool mygo vet              # 检查把 build 值存进结构体这类 MyGo �
 
 ## 已知限制
 
-下表与 [`design.md`](openspec/changes/add-hdf5-viewer/design.md) 的 Risks / Trade-offs 一一对应，编号一致。
+下表与 [`design.md`](openspec/changes/archive/2026-11-24-add-hdf5-viewer/design.md) 的 Risks / Trade-offs 一一对应，编号一致。
 
 | # | 限制 | 表现与处理 |
 | --- | --- | --- |
@@ -144,4 +148,6 @@ go tool mygo vet              # 检查把 build 值存进结构体这类 MyGo �
 
 ## 许可
 
-见 `openspec/changes/add-hdf5-viewer/proposal.md` 的 Impact 章节。
+本项目以 [MIT 许可证](LICENSE) 发布，完整条款见仓库根目录的 `LICENSE` 文件。
+
+第三方依赖（`purego`、`mygo`、`go-text/typesetting`、`scigolib/hdf5`、`golang.org/x/{image,net,text}`）各自遵循其原始许可证；测试夹具的生成与验证依赖 HDF5 与 h5py，仅用于开发，不随产物分发。
