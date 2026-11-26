@@ -258,8 +258,8 @@ func (a *app) view(c *ui.Context) {
 
 // topBar 是 46px 的顶栏：标记、文件名、菜单、只读徽标与打开按钮。
 //
-// Windows 上窗口使用隐藏标题栏（TitleBarHidden），顶栏同时充当标题栏：
-// 为右上角的窗口按钮留出 c.TitleBar().Right，并让空白处可拖动窗口。
+// Windows 与 macOS 上窗口使用隐藏标题栏（TitleBarHidden），顶栏同时充当标题栏：
+// 为窗口按钮留出 c.TitleBar().Right（macOS 交通灯在左侧，对应 Left），并让空白处可拖动窗口。
 func (a *app) topBar(c *ui.Context) {
 	tb := c.TitleBar()
 	height := float32(topBarH)
@@ -690,9 +690,10 @@ func main() {
 			AutoHideMenuBar: true,
 			Content:         ui.View(a.view),
 		}
-		if runtime.GOOS == "windows" {
-			// 隐藏系统标题栏，由顶栏充当标题栏，避免浅色模式下的白条；
-			// 窗口按钮仍由系统绘制，按深色背景配色。
+		// 隐藏系统标题栏，由深色顶栏充当标题栏：
+		// Windows 避免出现浅色白条，macOS 避免出现与深色界面不协调的白色原生条。
+		// 窗口按钮仍由系统绘制，按深色背景配色（macOS 上为交通灯按钮）。
+		if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 			opts.TitleBarStyle = mygo.TitleBarHidden
 			opts.TitleBarHeight = topBarH
 		}
