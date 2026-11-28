@@ -1,7 +1,7 @@
 {
   "name": "GoHdfView",
   "identifier": "com.example.gohdfview",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "out": "build",
   "ios": { "minimumSystemVersion": "17.0" },
   "android": { "minSdk": 26 }

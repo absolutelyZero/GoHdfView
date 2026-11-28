@@ -15,8 +15,8 @@ import (
 // 真实实现包装 *hdf5.Document；测试可以注入假实现，
 // 从而在没有真实文件的情况下构造任意形状（含上万成员）的树。
 type Source interface {
-	// Root 返回根节点；没有文档时返回 nil。
-	Root() *hdf5.Node
+	// Roots 返回所有文件根节点；没有文档时返回 nil。
+	Roots() []*hdf5.Node
 	// Children 返回节点的直接成员；非容器返回 nil, nil。
 	Children(n *hdf5.Node) ([]*hdf5.Node, error)
 }
@@ -48,7 +48,7 @@ func (nodeMeta) Info(n *hdf5.Node) (*hdf5.DatasetInfo, error) { return n.Info() 
 // docSource 把 *hdf5.Document 适配成 Source。
 type docSource struct{ doc *hdf5.Document }
 
-func (d docSource) Root() *hdf5.Node { return d.doc.Root() }
+func (d docSource) Roots() []*hdf5.Node { return []*hdf5.Node{d.doc.Root()} }
 
 func (d docSource) Children(n *hdf5.Node) ([]*hdf5.Node, error) { return n.Children() }
 
@@ -96,15 +96,26 @@ type App struct {
 	// Err 是最近一次读取失败的原因，由视图显示为提示。
 	Err error
 
-	// rd 是表格读取来源；为 nil 时用 doc。
+	// rd 是表格读取来源覆盖；为 nil 时按节点所属文档路由。
 	rd Reader
-	// meta 是数据集描述来源；为 nil 时直接问节点。
+	// meta 是数据集描述覆盖；为 nil 时直接问节点。
 	meta Meta
+	// multiRd / multiMeta 由多文件组合 Source 注入，按节点所属文档路由。
+	multiRd   Reader
+	multiMeta Meta
 
 	// async 是读取调度器，invalidate 是「请重绘」的回调。
 	// 两者都可由 main.go 注入；未注入时读取同步执行、结果直接生效。
 	async      Async
 	invalidate func()
+
+	// csvExporter 由 main.go 注入：接收范围并异步保存 view 生成的 CSV。
+	// 为 nil 时视图不显示导出入口（如测试环境）。
+	csvExporter func(CSVExportScope, CSVWriteFunc)
+
+	// tableDetacher 由 main.go 注入：把当前数据表在独立窗口打开。
+	// 为 nil 时视图不显示「独立窗口」入口。
+	tableDetacher func()
 
 	// gen 是表格请求的代号，每次换对象或翻页自增。
 	// 迟到的读取结果因代号不符被丢弃（任务 5.7）。
@@ -198,19 +209,173 @@ func (a *App) SetSource(src Source) error {
 	if src == nil {
 		a.doc = nil
 		a.rd = nil
+		a.multiRd = nil
+		a.multiMeta = nil
 		return nil
 	}
-	root := src.Root()
-	if root == nil {
+	roots := src.Roots()
+	if len(roots) == 0 {
+		a.Tree.Generation++
+		return nil
+	}
+	if roots[0] == nil {
 		return fmt.Errorf("%w：文档没有根组", hdf5.ErrCorrupt)
 	}
-	a.nodes[root.ID] = root
-	a.roots = []hdf5.NodeID{root.ID}
-	a.Tree.Open.Add(root.ID)
+	for _, root := range roots {
+		a.nodes[root.ID] = root
+		a.roots = append(a.roots, root.ID)
+		a.Tree.Open.Add(root.ID)
+	}
 	a.Tree.Generation++
 	a.TreeRow = 0
+	a.Selected = &roots[0].ID
+	a.Current = roots[0]
+	a.resetTable()
+	a.resetImage()
+	return nil
+}
+
+// AddDocument 把一个已打开文档加入统一树：登记根节点、选择它并装上按文件路由的读取器。
+func (a *App) AddDocument(doc *hdf5.Document) error {
+	if doc == nil || doc.Root() == nil {
+		return fmt.Errorf("%w：文档没有根组", hdf5.ErrCorrupt)
+	}
+	ms, ok := a.src.(*multiSource)
+	if !ok {
+		ms = newMultiSource()
+		a.src = ms
+	}
+	ms.add(doc)
+	if a.multiRd == nil {
+		a.multiRd = routedReader{ms}
+		a.multiMeta = routedMeta{ms}
+	}
+	a.AddRoot(doc.Root())
+	return nil
+}
+
+// AddFileReader 注入某个文件的读取覆盖（测试用）。必须在 AddDocument 之后调用。
+func (a *App) AddFileReader(file string, rd Reader) {
+	if ms, ok := a.src.(*multiSource); ok {
+		ms.setReader(file, rd)
+	}
+}
+
+// AddFileMeta 注入某个文件的描述覆盖（测试用）。必须在 AddDocument 之后调用。
+func (a *App) AddFileMeta(file string, meta Meta) {
+	if ms, ok := a.src.(*multiSource); ok {
+		ms.setMeta(file, meta)
+	}
+}
+
+// RemoveDocument 从统一树移除一个文件并释放其路由登记。
+func (a *App) RemoveDocument(file string) {
+	if ms, ok := a.src.(*multiSource); ok {
+		ms.remove(file)
+	}
+	a.RemoveRoot(file)
+}
+
+// AddRoot 把一个新文件的根节点加入统一树，并选中它；不清空其它文件的展开状态。
+func (a *App) AddRoot(root *hdf5.Node) {
+	if root == nil {
+		return
+	}
+	a.nodes[root.ID] = root
+	a.roots = append(a.roots, root.ID)
+	a.Tree.Open.Add(root.ID)
+	a.Tree.Generation++
 	a.Selected = &root.ID
 	a.Current = root
+	a.pending = &root.ID
+	a.resetTable()
+	a.resetImage()
+}
+
+// RemoveRoot 移除某个文件的所有根节点与索引，并把选中转到剩余文件。
+func (a *App) RemoveRoot(file string) {
+	var openIDs []hdf5.NodeID
+	for id := range a.nodes {
+		if id.File != file && a.Tree.Open.Has(id) {
+			openIDs = append(openIDs, id)
+		}
+	}
+	var keep []hdf5.NodeID
+	for _, id := range a.roots {
+		if id.File != file {
+			keep = append(keep, id)
+		}
+	}
+	a.roots = keep
+	for id := range a.nodes {
+		if id.File == file {
+			delete(a.nodes, id)
+		}
+	}
+	for id := range a.kids {
+		if id.File == file {
+			delete(a.kids, id)
+		}
+	}
+	for id := range a.loaded {
+		if id.File == file {
+			delete(a.loaded, id)
+		}
+	}
+	a.Tree.Open.Clear()
+	for _, id := range openIDs {
+		a.Tree.Open.Add(id)
+	}
+	for _, id := range a.roots {
+		a.Tree.Open.Add(id)
+	}
+	a.Tree.Generation++
+	if len(a.roots) > 0 {
+		next := a.nodes[a.roots[len(a.roots)-1]]
+		a.Selected = &next.ID
+		a.Current = next
+		a.pending = &next.ID
+	} else {
+		a.Selected = nil
+		a.Current = nil
+		a.TreeRow = -1
+		a.pending = nil
+	}
+	a.resetTable()
+	a.resetImage()
+}
+
+// SetRoutedSources 注入按节点所属文档路由的读取与描述来源。
+// 单文件场景不调用，仍走 rd/doc 的既有路径。
+func (a *App) SetRoutedSources(rd Reader, meta Meta) {
+	a.multiRd, a.multiMeta = rd, meta
+}
+
+// SetRoots 在保留现有树状态的前提下替换根节点集合。
+// 新打开或关闭文件后由 main 调用，避免整棵树被重置。
+func (a *App) SetRoots(roots []*hdf5.Node, selected *hdf5.Node) error {
+	if len(roots) == 0 {
+		a.src = nil
+		a.doc = nil
+		a.multiRd, a.multiMeta = nil, nil
+		a.reset()
+		return nil
+	}
+	a.reset()
+	for _, root := range roots {
+		a.nodes[root.ID] = root
+		a.roots = append(a.roots, root.ID)
+		a.Tree.Open.Add(root.ID)
+	}
+	a.Tree.Generation++
+	if selected == nil {
+		selected = roots[len(roots)-1]
+	}
+	a.nodes[selected.ID] = selected
+	a.Selected = &selected.ID
+	a.Current = selected
+	a.TreeRow = 0
+	a.pending = &selected.ID
 	a.resetTable()
 	a.resetImage()
 	return nil
@@ -225,8 +390,13 @@ func (a *App) SetDocument(doc *hdf5.Document) error {
 	return a.SetSource(docSource{doc: doc})
 }
 
-// Document 返回当前文档；没有时返回 nil。
-func (a *App) Document() *hdf5.Document { return a.doc }
+// Document 返回当前选中节点所属的文档；没有时返回 nil。
+func (a *App) Document() *hdf5.Document {
+	if a.Current == nil {
+		return nil
+	}
+	return a.Current.Document()
+}
 
 // SetReader 覆盖表格读取来源；传 nil 恢复使用当前文档。
 func (a *App) SetReader(rd Reader) { a.rd = rd }
@@ -234,10 +404,27 @@ func (a *App) SetReader(rd Reader) { a.rd = rd }
 // SetMeta 覆盖数据集描述来源；传 nil 恢复直接问节点。
 func (a *App) SetMeta(m Meta) { a.meta = m }
 
+// SetCSVExporter 注入 CSV 导出处理器；传 nil 禁用导出入口。
+func (a *App) SetCSVExporter(fn func(CSVExportScope, CSVWriteFunc)) { a.csvExporter = fn }
+
+// SetTableDetacher 注入独立窗口打开处理器；传 nil 禁用该入口。
+func (a *App) SetTableDetacher(fn func()) { a.tableDetacher = fn }
+
+// CanDetachTable 报告是否显示「独立窗口」入口。
+func (a *App) CanDetachTable() bool { return a.tableDetacher != nil }
+
+// CanExportCSV 报告当前是否可导出（已注入处理器且当前是数值表）。
+func (a *App) CanExportCSV(l TableLayout) bool {
+	return a.csvExporter != nil && l.OK && l.Kind == readNumeric && !l.Scalar
+}
+
 // info 返回当前对象的描述。
 func (a *App) info(n *hdf5.Node) (*hdf5.DatasetInfo, error) {
 	if a.meta != nil {
 		return a.meta.Info(n)
+	}
+	if a.multiMeta != nil {
+		return a.multiMeta.Info(n)
 	}
 	return n.Info()
 }
@@ -246,6 +433,9 @@ func (a *App) info(n *hdf5.Node) (*hdf5.DatasetInfo, error) {
 func (a *App) reader() Reader {
 	if a.rd != nil {
 		return a.rd
+	}
+	if a.multiRd != nil {
+		return a.multiRd
 	}
 	if a.doc == nil {
 		return nil
@@ -390,6 +580,16 @@ func (a *App) find(p string) (*hdf5.Node, error) {
 		return nil, fmt.Errorf("%w：没有打开的文档", hdf5.ErrNotFound)
 	}
 	cur := a.roots[0]
+	if a.Current != nil {
+		// 多文件统一树：按当前选中节点所属文件查找，避免路径只在第一个文件生效。
+		for _, id := range a.roots {
+			r := a.nodes[id]
+			if r != nil && r.ID.File == a.Current.ID.File {
+				cur = id
+				break
+			}
+		}
+	}
 	for _, seg := range splitPath(p) {
 		n := a.nodes[cur]
 		if n == nil || !n.IsContainer() {
@@ -421,6 +621,15 @@ func (a *App) openAncestors(p string) {
 		return
 	}
 	cur := a.roots[0]
+	if a.Current != nil {
+		for _, id := range a.roots {
+			r := a.nodes[id]
+			if r != nil && r.ID.File == a.Current.ID.File {
+				cur = id
+				break
+			}
+		}
+	}
 	a.Tree.Open.Add(cur)
 	segs := splitPath(p)
 	for i := 0; i < len(segs)-1; i++ {

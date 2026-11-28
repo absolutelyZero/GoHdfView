@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -47,8 +48,17 @@ const (
 // 跨帧存活的字段只放在这里；控件本身是 build-pass 的临时值，
 // 不能存进结构体（见 design.md 决策 1 与 9）。
 type app struct {
-	// state 是对象树、表格、图像等视图状态，全部在 internal/view 里。
+	// state 是唯一的视图状态：一棵统一对象树容纳所有已打开文件。
 	state *view.App
+	// files 是已打开文件的句柄集合，负责去重与退出时释放。
+	files []*openFile
+	// viewStates 按文件保存视图标签与数据模式，实现「视图状态按文件隔离」。
+	viewStates map[string]*fileViewState
+	// lastFile 是上一帧选中的文件标识，用于切换文件时保存/恢复视图状态。
+	lastFile string
+	// windows 是已打开的数据表独立窗口；newTableWindow 可注入以测试。
+	windows        []*tableWindow
+	newTableWindow windowFactory
 	// win 是主窗口，用于改标题与请求重绘；无窗口时为 nil。
 	win *mygo.Window
 
@@ -64,6 +74,91 @@ type app struct {
 	// 打开失败时保留原有文档，只在这里追加一条可关闭的提示
 	// （viewer-shell 的「错误提示不阻塞浏览」）。
 	errMsg string
+
+	// recentExport 是最近一次成功导出的路径与完成时间；path 为空表示无提示。
+	recentExport struct {
+		path string
+		at   time.Time
+	}
+
+	// openExportedFile / revealExportedFile 可由测试注入以替代系统 Shell 调用。
+	openExportedFile   func(string) error
+	revealExportedFile func(string)
+}
+
+// openFile 是 main 维护的一个已打开文件句柄。
+// 统一树的状态在 view.App 里，这里只负责句柄生命周期与路径去重。
+type openFile struct {
+	path string // 规范化绝对路径，用于去重
+	doc  *hdf5.Document
+}
+
+// fileViewState 是单个文件的视图标签与数据模式。
+type fileViewState struct {
+	tab      int
+	dataMode int
+}
+
+// windowHandle 是独立窗口需要的原生窗口能力子集，便于测试注入假实现。
+type windowHandle interface {
+	Show()
+	Close()
+	Invalidate()
+	SetTitle(string)
+	SetWindowButtonsTheme(mygo.ThemeSource)
+	OnClose(func(*mygo.CloseEvent)) func()
+}
+
+// windowFactory 创建原生窗口；默认使用 mygo.NewWindow。
+type windowFactory func(mygo.WindowOptions) windowHandle
+
+// tableWindow 是一个独立数据表窗口：持有自己的视图状态与窗口句柄。
+// 文档句柄归主窗口所有，这里只读复用。
+type tableWindow struct {
+	win     windowHandle
+	state   *view.App
+	title   string
+	closing bool
+}
+
+// currentFile 返回当前选中节点所属文件的标识；无选中时返回空串。
+func (a *app) currentFile() string {
+	if a.state == nil || a.state.Current == nil {
+		return ""
+	}
+	return a.state.Current.ID.File
+}
+
+// switchToFile 在选中文件变化时保存旧文件视图状态、恢复新文件视图状态。
+// 视图标签与数据模式因而按文件隔离（design.md 决策 6）。
+// 必须在改变 currentFile 的操作之后立即调用，以便先捕获旧文件状态。
+func (a *app) switchToFile() {
+	f := a.currentFile()
+	if f == a.lastFile {
+		return
+	}
+	if a.lastFile != "" {
+		a.viewStates[a.lastFile] = &fileViewState{tab: a.tab, dataMode: a.dataMode}
+	}
+	a.lastFile = f
+	if vs := a.viewStates[f]; vs != nil {
+		a.tab, a.dataMode = vs.tab, vs.dataMode
+	} else {
+		a.tab, a.dataMode = tabData, modeTable
+	}
+}
+
+// wireState 给唯一的 view.App 注入导出、独立窗口与异步回调。
+// 无窗口的测试环境保持同步读取，便于逐帧断言。
+func (a *app) wireState() {
+	st := a.state
+	st.SetCSVExporter(a.saveCSV)
+	st.SetTableDetacher(a.openTableInWindow)
+	if a.win == nil {
+		return
+	}
+	st.SetAsync(func(work func()) { go work() })
+	st.SetInvalidate(func() { a.invalidate() })
 }
 
 // newApp 创建空状态的应用。
@@ -71,12 +166,16 @@ type app struct {
 // 这里不注入异步调度器：测试用同步读取以便逐帧断言，
 // 真实窗口在 main 里再装上工作 goroutine。
 func newApp() *app {
-	return &app{
-		state:    view.NewApp(),
-		split:    sidebarW,
-		tab:      tabData,
-		dataMode: modeTable,
+	a := &app{
+		state:          view.NewApp(),
+		viewStates:     make(map[string]*fileViewState),
+		split:          sidebarW,
+		tab:            tabData,
+		dataMode:       modeTable,
+		newTableWindow: func(opts mygo.WindowOptions) windowHandle { return mygo.NewWindow(opts) },
 	}
+	a.wireState()
+	return a
 }
 
 // invalidate 请求下一帧重绘；没有窗口时什么也不做。
@@ -95,44 +194,176 @@ func (a *app) setError(err error) {
 	a.invalidate()
 }
 
-// openFile 以只读方式打开文件；失败时保留当前文档。
+// openFile 以只读方式打开文件，作为根节点加入统一对象树并选中。
+// 打开失败保留当前状态并显示非模态提示；重复打开同一路径只定位到已有根节点。
 func (a *app) openFile(path string) {
 	if path == "" {
 		return
 	}
-	doc, err := hdf5.Open(path)
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		// 打不开：当前文档不动，只在提示条上说明原因。
+		abs = filepath.Clean(path)
+	}
+	for _, of := range a.files {
+		if of.path == abs || filepath.Clean(of.doc.Path()) == filepath.Clean(abs) {
+			if root := of.doc.Root(); root != nil {
+				a.state.Select(root.ID)
+			}
+			a.refreshTitle()
+			a.invalidate()
+			return
+		}
+	}
+	doc, err := hdf5.Open(abs)
+	if err != nil {
 		a.setError(err)
 		return
 	}
-	// 先释放旧句柄再换新文档，避免两个文件同时被占用（任务 7.6）。
-	if old := a.state.Document(); old != nil {
-		old.Close()
-	}
-	if err := a.state.SetDocument(doc); err != nil {
+	if err := a.state.AddDocument(doc); err != nil {
 		doc.Close()
 		a.setError(err)
 		return
 	}
-	a.errMsg = ""
-	a.tab = tabData
-	a.dataMode = modeTable
+	a.files = append(a.files, &openFile{path: abs, doc: doc})
+	a.switchToFile()
 	a.refreshTitle()
+	a.invalidate()
 }
 
-// closeFile 释放句柄并回到空状态（Ctrl+W / 文件菜单）。
+// closeFile 关闭当前选中节点所属的文件（Ctrl+W / 文件菜单）。
 func (a *app) closeFile() {
-	if doc := a.state.Document(); doc != nil {
-		doc.Close()
+	file := a.currentFile()
+	if file == "" {
+		return
 	}
-	if err := a.state.SetDocument(nil); err != nil {
-		a.setError(err)
+	for i, of := range a.files {
+		if of.doc.Root() != nil && of.doc.Root().ID.File == file {
+			a.state.RemoveDocument(file)
+			_ = of.doc.Close()
+			a.files = append(a.files[:i], a.files[i+1:]...)
+			delete(a.viewStates, file)
+			if a.lastFile == file {
+				a.lastFile = ""
+			}
+			break
+		}
 	}
-	a.errMsg = ""
-	a.tab = tabData
-	a.dataMode = modeTable
 	a.refreshTitle()
+	a.invalidate()
+}
+
+// detachedTableView 返回独立数据表窗口的内容视图：与主窗口 view() 一致，
+// 每帧先设置深色主题，自绘深色标题栏（原生标题栏已隐藏），再以 ColBg 背景包裹 DataTable。
+func detachedTableView(st *view.App, title string) func(*ui.Context) {
+	return func(c *ui.Context) {
+		c.SetTheme(view.Theme())
+		ui.Column(c).Fill().Background(view.ColBg).Children(func() {
+			// 自绘标题栏：交通灯浮在其上，空白处可拖动窗口。
+			tb := c.TitleBar()
+			h := float32(topBarH)
+			if tb.Height > h {
+				h = tb.Height
+			}
+			bar := ui.Row(c).Shrink(0).Height(h).AlignItems(ui.Center).
+				Padding(0, tb.Right+16, 0, tb.Left+16).Background(view.ColPanel)
+			if tb.Height > 0 {
+				bar.DragWindow()
+			}
+			bar.Draw(func(p *ui.Painter, r ui.Rect) { view.Hairline(p, r, view.ColLine) })
+			bar.Children(func() {
+				ui.Text(c, title).FontSize(13).FontWeight(600).
+					TextColor(view.ColText).SingleLine()
+			})
+			view.DataTable(c, st)
+		})
+	}
+}
+
+// openTableInWindow 把当前选中的数据集的数据表放到独立原生窗口。
+// 每个窗口持有独立 view.App，内容在打开时固定，不随主窗口选中变化。
+func (a *app) openTableInWindow() {
+	node := a.state.Current
+	if node == nil || !a.state.DataAvailable() {
+		return
+	}
+	doc := a.state.Document()
+	if doc == nil {
+		return
+	}
+
+	// 独立状态：复用同一份只读文档句柄，定位到打开时选中的数据集。
+	st := view.NewApp()
+	if err := st.AddDocument(doc); err != nil {
+		a.setError(err)
+		return
+	}
+	if err := st.SelectPath(node.Path); err != nil {
+		a.setError(err)
+		return
+	}
+	if a.win != nil {
+		st.SetAsync(func(work func()) { go work() })
+	}
+	st.SetCSVExporter(a.saveCSV)
+
+	title := node.Name + " — " + filepath.Base(doc.Path())
+	tw := &tableWindow{state: st, title: title}
+	if a.win != nil {
+		st.SetInvalidate(func() {
+			if tw.win != nil {
+				tw.win.Invalidate()
+			}
+		})
+	}
+	factory := a.newTableWindow
+	if factory == nil {
+		factory = func(opts mygo.WindowOptions) windowHandle { return mygo.NewWindow(opts) }
+	}
+	content := ui.View(detachedTableView(st, title))
+	opts := mygo.WindowOptions{
+		Title:   title,
+		Width:   1000,
+		Height:  700,
+		Content: content,
+	}
+	// 与主窗口一致：隐藏原生标题栏（macOS 避免出现浅色系统条），
+	// 由自绘深色标题栏充当，窗口按钮按深色背景配色。
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		opts.TitleBarStyle = mygo.TitleBarHidden
+		opts.TitleBarHeight = topBarH
+	}
+	tw.win = factory(opts)
+	if tw.win != nil {
+		tw.win.SetWindowButtonsTheme(mygo.ThemeDark)
+		tw.win.OnClose(func(*mygo.CloseEvent) { a.closeTableWindow(tw) })
+		tw.win.Show()
+	}
+	a.windows = append(a.windows, tw)
+	a.invalidate()
+}
+
+// closeTableWindow 关闭一个独立数据表窗口；不关闭共享的文档句柄。
+func (a *app) closeTableWindow(tw *tableWindow) {
+	if tw == nil || tw.closing {
+		return
+	}
+	tw.closing = true
+	for i, w := range a.windows {
+		if w == tw {
+			a.windows = append(a.windows[:i], a.windows[i+1:]...)
+			break
+		}
+	}
+	if tw.win != nil {
+		tw.win.Close()
+	}
+}
+
+// closeAllTableWindows 关闭所有独立窗口（主窗口退出时调用）。
+func (a *app) closeAllTableWindows() {
+	for _, w := range append([]*tableWindow(nil), a.windows...) {
+		a.closeTableWindow(w)
+	}
 }
 
 // refreshTitle 把文件名写进窗口标题。
@@ -154,8 +385,9 @@ func (a *app) refreshTitle() {
 func (a *app) openDialog() {
 	go func() {
 		paths, err := mygo.Dialog.Open(mygo.OpenDialogOptions{
-			Parent: a.win,
-			Title:  "打开 HDF5 文件",
+			Parent:   a.win,
+			Title:    "打开 HDF5 文件",
+			Multiple: true,
 			Filters: []mygo.FileFilter{
 				{Name: "HDF5 文件", Extensions: []string{"h5", "hdf5", "he5", "mat"}},
 				{Name: "所有文件", Extensions: []string{"*"}},
@@ -164,13 +396,110 @@ func (a *app) openDialog() {
 		if err != nil || len(paths) == 0 {
 			return
 		}
-		path := paths[0]
+		apply := func() {
+			for _, p := range paths {
+				a.openFile(p)
+			}
+		}
 		if a.win == nil {
-			a.openFile(path)
+			apply()
 			return
 		}
-		a.win.Update(func() { a.openFile(path) })
+		a.win.Update(apply)
 	}()
+}
+
+// saveCSV 是注入到 view 的导出处理器：弹出保存对话框后用临时文件原子写入。
+// scope 仅用于默认文件名提示；实际 CSV 内容由 write 决定。
+func (a *app) saveCSV(scope view.CSVExportScope, write view.CSVWriteFunc) {
+	name := "data.csv"
+	if scope == view.CSVScopeAll {
+		name = "data-all.csv"
+	}
+	go func() {
+		path, err := mygo.Dialog.Save(mygo.SaveDialogOptions{
+			Parent:      a.win,
+			Title:       "导出数据表为 CSV",
+			DefaultPath: name,
+			Filters: []mygo.FileFilter{
+				{Name: "CSV 文件", Extensions: []string{"csv"}},
+				{Name: "所有文件", Extensions: []string{"*"}},
+			},
+		})
+		if err != nil || path == "" {
+			return // 取消：不产生文件
+		}
+		if err := writeCSVFile(path, write); err != nil {
+			a.reportExportError(err)
+			return
+		}
+		a.reportExportDone(path)
+	}()
+}
+
+// reportExportDone 把成功导出的路径切回主线程，记录为「最近导出」并请求重绘。
+func (a *app) reportExportDone(path string) {
+	set := func() {
+		a.recentExport.path = path
+		a.recentExport.at = time.Now()
+		a.invalidate()
+	}
+	if a.win != nil {
+		a.win.Update(set)
+		return
+	}
+	set()
+}
+
+// openExported 用系统默认应用打开导出的 CSV。
+func (a *app) openExported(path string) {
+	if a.openExportedFile != nil {
+		if err := a.openExportedFile(path); err != nil {
+			a.setError(err)
+		}
+		return
+	}
+	if err := mygo.Shell.OpenPath(path); err != nil {
+		a.setError(err)
+	}
+}
+
+// revealExported 在文件管理器中定位导出的 CSV。
+func (a *app) revealExported(path string) {
+	if a.revealExportedFile != nil {
+		a.revealExportedFile(path)
+		return
+	}
+	mygo.Shell.ShowItemInFolder(path)
+}
+
+// writeCSVFile 用临时文件 + 原子重命名把 CSV 写到 path；失败时清理临时文件。
+func writeCSVFile(path string, write view.CSVWriteFunc) error {
+	tmp := path + ".tmp"
+	f, err := os.Create(tmp)
+	if err == nil {
+		err = write(f)
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		_ = os.Remove(tmp)
+	}
+	return err
+}
+
+// reportExportError 把后台导出的错误切回主线程显示。
+func (a *app) reportExportError(err error) {
+	show := func() { a.setError(err) }
+	if a.win != nil {
+		a.win.Update(show)
+		return
+	}
+	show()
 }
 
 // showAbout 显示版本号与解析库版本（帮助菜单）。
@@ -222,6 +551,10 @@ func (a *app) menu() *mygo.Menu {
 			{Label: "元数据", Accelerator: "CmdOrCtrl+2", Click: setTab(tabMetadata)},
 			{Label: "属性", Accelerator: "CmdOrCtrl+3", Click: setTab(tabAttributes)},
 			mygo.Separator(),
+			{Label: "在独立窗口打开数据表", Accelerator: "CmdOrCtrl+Shift+D", Click: func(*mygo.MenuItem, *mygo.Window) {
+				a.openTableInWindow()
+			}},
+			mygo.Separator(),
 			{Label: "全部展开", Accelerator: "CmdOrCtrl+Shift+E", Click: func(*mygo.MenuItem, *mygo.Window) {
 				a.state.ExpandAll()
 				a.invalidate()
@@ -239,6 +572,7 @@ func (a *app) menu() *mygo.Menu {
 
 // view 是窗口内容：顶栏 + 左树 / 右工作区 + 状态栏。
 func (a *app) view(c *ui.Context) {
+	a.switchToFile()
 	c.SetTheme(view.Theme())
 	ui.Column(c).Fill().Background(view.ColBg).Children(func() {
 		a.topBar(c)
@@ -360,6 +694,10 @@ func (a *app) viewMenu(m *ui.Menu) {
 	}
 	if m.Item("属性").Chosen() {
 		pick(tabAttributes)
+	}
+	m.Separator()
+	if m.Item("在独立窗口打开数据表").Chosen() {
+		a.openTableInWindow()
 	}
 	m.Separator()
 	if m.Item("全部展开").Chosen() {
@@ -591,11 +929,31 @@ func (a *app) dataView(c *ui.Context) {
 		return
 	}
 	ui.Column(c).Fill().Children(func() {
+		if a.recentExport.path != "" {
+			a.exportBanner(c)
+		}
 		if a.dataMode == modeImage {
 			view.ImageView(c, a.state)
 			return
 		}
 		view.DataTable(c, a.state)
+	})
+}
+
+// exportBanner 是导出成功后的非模态提示条：显示保存路径并提供快捷打开操作。
+func (a *app) exportBanner(c *ui.Context) {
+	path := a.recentExport.path
+	bar := ui.Row(c).Shrink(0).AlignItems(ui.Center).Padding(6, 16).Gap(8).
+		Background(view.ColPanel2)
+	bar.Draw(func(p *ui.Painter, r ui.Rect) { view.Hairline(p, r, view.ColLine) })
+	bar.Children(func() {
+		ui.Text(c, "✓").FontSize(12).TextColor(view.ColAccent).SingleLine()
+		ui.Text(c, "已导出").FontSize(11.5).TextColor(view.ColDim).SingleLine()
+		ui.Text(c, path).Font(view.FontMono).FontSize(11).TextColor(view.ColMute).
+			Grow(1).SingleLine()
+		view.GhostButton(c, "打开文件", func() { a.openExported(path) })
+		view.GhostButton(c, "打开文件夹", func() { a.revealExported(path) })
+		view.GhostButton(c, "关闭", func() { a.recentExport.path = "" })
 	})
 }
 
@@ -702,29 +1060,28 @@ func main() {
 		// 窗口与任务栏图标用 logo.pen 导出的应用图标，与顶栏标记同源。
 		_ = a.win.SetIcon(view.IconPNG())
 
-		// 大切片在工作 goroutine 上读，结果经 Window.Update 写回，
-		// 避免读取期间界面不响应（design.md 决策 4）。
-		a.state.SetAsync(func(work func()) { go work() })
-		a.state.SetInvalidate(func() { a.win.Invalidate() })
+		// 唯一的 view.App 注入异步调度、重绘与导出回调（design.md 决策 7）。
+		a.wireState()
 
 		// 拖放打开（任务 7.4）。
 		a.win.OnFileDrop(func(e *mygo.FileDropEvent) {
-			if len(e.Paths) > 0 {
-				a.openFile(e.Paths[0])
+			for _, p := range e.Paths {
+				a.openFile(p)
 			}
 		})
 		// 退出前释放句柄，退出后文件不被占用（任务 7.6）。
 		a.win.OnClose(func(*mygo.CloseEvent) {
-			if doc := a.state.Document(); doc != nil {
-				doc.Close()
+			a.closeAllTableWindows()
+			for _, of := range a.files {
+				_ = of.doc.Close()
 			}
 		})
 
 		mygo.App.SetMenu(a.menu())
 
 		// 命令行参数直接打开（任务 7.4）。
-		if len(os.Args) > 1 {
-			a.openFile(os.Args[1])
+		for _, p := range os.Args[1:] {
+			a.openFile(p)
 		}
 	})
 	if err := mygo.App.Run(); err != nil {

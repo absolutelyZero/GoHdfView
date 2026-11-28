@@ -253,6 +253,8 @@ const pageCacheLimit = 8
 // tableKey 含切片，不能直接作 map 键，因此拼成稳定字符串。
 func (k tableKey) id() string {
 	var b strings.Builder
+	b.WriteString(k.node.File)
+	b.WriteByte('|')
 	b.WriteString(k.node.Path)
 	b.WriteByte('|')
 	b.WriteString(strconv.FormatUint(k.node.Address, 10))

@@ -943,3 +943,146 @@ func TestTableRealFixtureEnum(t *testing.T) {
 		t.Fatalf("枚举应显示成员名，实际 %q", tt.Texts())
 	}
 }
+
+// findVisible 返回文本 s 对应元素在窗口中的位置，并断言它可见。
+func findVisible(t *testing.T, tt *ui.Tester, s string) ui.Rect {
+	t.Helper()
+	r, ok := tt.Find(s)
+	if !ok || r.W <= 0 {
+		t.Fatalf("文本 %q 应可见，实际 %+v ok=%v", s, r, ok)
+	}
+	return r
+}
+
+// assertStuckAt 断言横向滚动后元素仍停在原位置。
+func assertStuckAt(t *testing.T, tt *ui.Tester, s string, before ui.Rect) {
+	t.Helper()
+	after := findVisible(t, tt, s)
+	if after.X != before.X || after.Y != before.Y {
+		t.Errorf("横向滚动后 %q 应固定，位置由 %+v 变为 %+v", s, before, after)
+	}
+}
+
+// assertMovedLeft 断言元素随数据列向左移动了约 dx，且纵向位置不变。
+func assertMovedLeft(t *testing.T, tt *ui.Tester, s string, before ui.Rect, dx float32) {
+	t.Helper()
+	after := findVisible(t, tt, s)
+	if got := before.X - after.X; got < dx-2 || got > dx+2 {
+		t.Errorf("横向滚动后 %q 应左移约 %v，位置由 %+v 变为 %+v", s, dx, before, after)
+	}
+	if after.Y != before.Y {
+		t.Errorf("横向滚动不应改变 %q 的纵向位置：%+v → %+v", s, before, after)
+	}
+}
+
+// TestTableFrozenGutterOnHorizontalScroll 覆盖任务 4.1 与 spec
+// 「横向滚动时行号列保持可见」「横向滚动不影响数据列与表头」：
+// 第二页的行号列在左右滚动时保持原位，数据列及其列头同步移动。
+func TestTableFrozenGutterOnHorizontalScroll(t *testing.T) {
+	rd := &fakeReader{}
+	app := tableApp(t, []uint64{1000, 50}, rd)
+	tt := ui.NewTester(tableView(app), 900, 600)
+	tt.Frame()
+	if err := tt.Click("下一屏"); err != nil {
+		t.Fatalf("Click 下一屏: %v", err)
+	}
+	tt.Frame()
+	if !tt.HasText("行 100–199 / 1000") {
+		t.Fatalf("应处于第二页，texts %q", tt.Texts())
+	}
+
+	labels := []string{"#", "100", "101", "6", "100.06"}
+	before := make(map[string]ui.Rect, len(labels))
+	for _, s := range labels {
+		before[s] = findVisible(t, tt, s)
+	}
+
+	// 向右滚动约 5 个列宽，远超可视宽度。
+	tt.Scroll(400, 100, 600, 0)
+	tt.Frame()
+	for _, s := range []string{"#", "100", "101"} {
+		assertStuckAt(t, tt, s, before[s])
+	}
+	for _, s := range []string{"6", "100.06"} {
+		assertMovedLeft(t, tt, s, before[s], 600)
+	}
+
+	// 再向左滚回：行号列仍原位，数据列与列头复位且保持对齐。
+	tt.Scroll(400, 100, -600, 0)
+	tt.Frame()
+	for _, s := range labels {
+		assertStuckAt(t, tt, s, before[s])
+	}
+}
+
+// TestTableFrozenGutterInOtherTableKinds 覆盖任务 4.2 与 spec
+// 「字符串、复合与失败占位表」：三种表格的首列同样冻结。
+func TestTableFrozenGutterInOtherTableKinds(t *testing.T) {
+	t.Run("字符串表", func(t *testing.T) {
+		rd := &fakeReader{strs: []string{"alpha", "beta", "gamma"}}
+		app := tableApp(t, []uint64{3}, rd)
+		app.SetMeta(&fakeMeta{info: &hdf5.DatasetInfo{
+			Rank: 1, Shape: []uint64{3}, MaxShape: []uint64{3}, ElemCount: 3,
+			Datatype: hdf5.DatatypeInfo{Class: 3, Size: 16},
+		}})
+		tt := ui.NewTester(tableView(app), 300, 600)
+		tt.Frame()
+		gutter := findVisible(t, tt, "#")
+		row0 := findVisible(t, tt, "0")
+		valueHead := findVisible(t, tt, "值")
+		tt.Scroll(150, 100, 40, 0)
+		tt.Frame()
+		assertStuckAt(t, tt, "#", gutter)
+		assertStuckAt(t, tt, "0", row0)
+		assertMovedLeft(t, tt, "值", valueHead, 40)
+	})
+
+	t.Run("复合表", func(t *testing.T) {
+		members := []string{"m0", "m1", "m2", "m3", "m4", "m5", "m6", "m7"}
+		cms := make([]hdf5.CompoundMember, len(members))
+		row := map[string]any{}
+		for i, m := range members {
+			cms[i] = hdf5.CompoundMember{Name: m, Offset: uint64(i * 8)}
+			row[m] = int32(i)
+		}
+		rd := &fakeReader{comp: &hdf5.Compound{Members: members, Rows: []map[string]any{row}}}
+		app := tableApp(t, []uint64{1}, rd)
+		app.SetMeta(&fakeMeta{info: &hdf5.DatasetInfo{
+			Rank: 1, Shape: []uint64{1}, MaxShape: []uint64{1}, ElemCount: 1,
+			Datatype: hdf5.DatatypeInfo{Class: 6, Size: 64, Members: cms},
+		}})
+		tt := ui.NewTester(tableView(app), 500, 600)
+		tt.Frame()
+		gutter := findVisible(t, tt, "#")
+		row0 := findVisible(t, tt, "0")
+		memberHead := findVisible(t, tt, "m2")
+		tt.Scroll(250, 100, 200, 0)
+		tt.Frame()
+		assertStuckAt(t, tt, "#", gutter)
+		assertStuckAt(t, tt, "0", row0)
+		assertMovedLeft(t, tt, "m2", memberHead, 200)
+	})
+
+	t.Run("失败占位表", func(t *testing.T) {
+		rd := &fakeReader{err: fmt.Errorf("boom")}
+		app := tableApp(t, []uint64{1000, 50}, rd)
+		tt := ui.NewTester(tableView(app), 900, 600)
+		tt.Frame()
+		// 翻到第二页：行号 100+ 与列头 0–49 不冲突，便于按文本定位。
+		if err := tt.Click("下一屏"); err != nil {
+			t.Fatalf("Click 下一屏: %v", err)
+		}
+		tt.Frame()
+		gutter := findVisible(t, tt, "#")
+		row100 := findVisible(t, tt, "100")
+		col6 := findVisible(t, tt, "6")
+		tt.Scroll(400, 100, 600, 0)
+		tt.Frame()
+		assertStuckAt(t, tt, "#", gutter)
+		assertStuckAt(t, tt, "100", row100)
+		assertMovedLeft(t, tt, "6", col6, 600)
+		if !tt.HasText(failureCell) {
+			t.Fatalf("滚动后失败占位仍应显示 %q，texts %q", failureCell, tt.Texts())
+		}
+	})
+}

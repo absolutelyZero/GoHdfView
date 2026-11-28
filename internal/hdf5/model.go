@@ -43,6 +43,9 @@ func (k NodeKind) String() string {
 // 路径作为兜底，用于解析库不提供地址的对象（组、命名类型）。
 // 不使用完整路径作为唯一身份，因为同一对象可被多个硬链接指向。
 type NodeID struct {
+	// File 是所属文件的规范化路径。多文件统一树中不同文件的对象头地址可能相同，
+	// 用文件标识参与身份与缓存键，避免跨文件串扰（design.md 决策 6）。
+	File    string
 	Address uint64
 	Kind    NodeKind
 	Path    string
@@ -78,6 +81,10 @@ type Node struct {
 func (n *Node) IsContainer() bool {
 	return n.Kind == KindGroup
 }
+
+// Document 返回节点所属的文档句柄。
+// 测试构造的人造节点没有文档，返回 nil。
+func (n *Node) Document() *Document { return n.doc }
 
 // DimensionSummary 返回对象树标签用的维度概要，例如 "[100×50]"。
 // 非数据集、或读取维度失败时返回空字符串。

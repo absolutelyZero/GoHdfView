@@ -3,7 +3,7 @@
 用 Go 与 [MyGo](https://mygo.run) 复刻的 HDFView 只读阅读器：打开 HDF5 文件，浏览对象树、查看元数据与属性、以表格或图像方式查看数据集。
 
 - **只读**：本项目不提供任何写入、编辑或另存为能力，也不会修改被打开的文件。写入 API 仅出现在测试夹具生成脚本 `internal/hdf5/testdata/gen.go`（`//go:build ignore`，不参与常规构建），并由 `internal/hdf5/readonly_test.go` 扫描源码来保证这一点。
-- **纯 Go 实现**：不依赖 HDF5 C 库与 WebView2；当前只支持 Windows 与 HDF5（不支持 HDF4）。
+- **纯 Go 实现**：不依赖 HDF5 C 库与 WebView2；支持 Windows 与 macOS（amd64 / arm64），只支持 HDF5（不支持 HDF4）。
 
 ## 与 HDFView 的差异
 

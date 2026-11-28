@@ -1,7 +1,11 @@
 package main
 
 import (
+	"errors"
+	"io"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -9,6 +13,7 @@ import (
 	"github.com/egoist/mygo/ui"
 
 	"gohdfview/internal/hdf5"
+	"gohdfview/internal/view"
 )
 
 // fixture 返回测试夹具的绝对路径。
@@ -408,6 +413,465 @@ func TestFormatSize(t *testing.T) {
 	for _, c := range cases {
 		if got := formatSize(c.in); got != c.want {
 			t.Errorf("formatSize(%d) = %q，want %q", c.in, got, c.want)
+		}
+	}
+}
+
+// TestWriteCSVFile 覆盖任务 4.1/4.2：成功时原子写入目标文件，失败时清理临时文件。
+func TestWriteCSVFile(t *testing.T) {
+	t.Run("成功写入", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "data.csv")
+		err := writeCSVFile(path, func(w io.Writer) error {
+			_, e := w.Write([]byte("#,0\n0,1\n"))
+			return e
+		})
+		if err != nil {
+			t.Fatalf("writeCSVFile: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("读回 CSV: %v", err)
+		}
+		if string(got) != "#,0\n0,1\n" {
+			t.Fatalf("CSV 内容不符：%q", got)
+		}
+	})
+
+	t.Run("写入失败清理临时文件", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "data.csv")
+		err := writeCSVFile(path, func(io.Writer) error { return errors.New("boom") })
+		if err == nil {
+			t.Fatal("应返回写入错误")
+		}
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("失败时不应产生目标文件，stat=%v", statErr)
+		}
+		if _, statErr := os.Stat(path + ".tmp"); !os.IsNotExist(statErr) {
+			t.Fatalf("失败时应清理临时文件，stat=%v", statErr)
+		}
+	})
+}
+
+// TestExportSuccessBanner 覆盖任务 5.1/5.2：成功导出后显示含路径的非模态提示与快捷打开按钮。
+func TestExportSuccessBanner(t *testing.T) {
+	a, tt := newTester(t)
+	openFixture(t, a, tt, "basic.h5")
+	if err := a.state.SelectPath("/matrix"); err != nil {
+		t.Fatal(err)
+	}
+	a.tab = tabData
+	tt.Frame()
+
+	// 注入 Shell 处理器并模拟导出成功回写状态（无窗口时同步执行）。
+	var opened, revealed string
+	a.openExportedFile = func(p string) error { opened = p; return nil }
+	a.revealExportedFile = func(p string) { revealed = p }
+	a.reportExportDone("data.csv")
+	tt.Frame()
+	if !tt.HasText("已导出") || !tt.HasText("data.csv") {
+		t.Fatalf("应显示导出成功提示与路径，texts %q", tt.Texts())
+	}
+	if a.recentExport.path != "data.csv" || a.recentExport.at.IsZero() {
+		t.Fatalf("最近导出状态不正确：%+v", a.recentExport)
+	}
+
+	if err := tt.Click("打开文件"); err != nil {
+		t.Fatalf("Click 打开文件: %v", err)
+	}
+	if err := tt.Click("打开文件夹"); err != nil {
+		t.Fatalf("Click 打开文件夹: %v", err)
+	}
+	if opened != "data.csv" || revealed != "data.csv" {
+		t.Fatalf("快捷打开未触发：opened=%q revealed=%q", opened, revealed)
+	}
+	if err := tt.Click("关闭"); err != nil {
+		t.Fatalf("Click 关闭: %v", err)
+	}
+	tt.Frame()
+	if tt.HasText("已导出") {
+		t.Fatalf("关闭后提示条应消失，texts %q", tt.Texts())
+	}
+}
+
+// TestOpenMultipleFiles 覆盖任务 2.1/3.1：两个文件作为树根，选中节点切换右侧数据。
+func TestOpenMultipleFiles(t *testing.T) {
+	a, tt := newTester(t)
+	a.openFile(fixture("basic.h5"))
+	a.openFile(fixture("compressed.h5"))
+	tt.Frame()
+
+	if len(a.files) != 2 {
+		t.Fatalf("应打开两个文件，实际 %d", len(a.files))
+	}
+	if a.currentFile() != absFixture(t, "compressed.h5") {
+		t.Fatalf("当前文件应为第二个文件，实际 %q", a.currentFile())
+	}
+	if !tt.HasText("basic.h5") || !tt.HasText("compressed.h5") {
+		t.Fatalf("应显示两个文件根节点，texts %q", tt.Texts())
+	}
+
+	// 选中第一个文件的根节点：状态栏与标题跟随。
+	basicFile := absFixture(t, "basic.h5")
+	n := a.files[0].doc.Root()
+	a.state.Select(n.ID)
+	tt.Frame()
+	if a.currentFile() != basicFile {
+		t.Fatalf("选中后当前文件应为 basic.h5，实际 %q", a.currentFile())
+	}
+	if !tt.HasText("basic.h5") {
+		t.Fatalf("状态栏应显示 basic.h5，texts %q", tt.Texts())
+	}
+
+	// 重复打开同一路径：不新增句柄，定位到已有根节点。
+	before := len(a.files)
+	a.openFile(fixture("basic.h5"))
+	tt.Frame()
+	if len(a.files) != before || a.currentFile() != basicFile {
+		t.Fatalf("重复打开不应新增文件，files=%d current=%q", len(a.files), a.currentFile())
+	}
+}
+
+// TestDocumentStateIsolation 覆盖任务 4.1：视图状态按文件隔离，切走再切回原样恢复。
+func TestDocumentStateIsolation(t *testing.T) {
+	a, tt := newTester(t)
+	a.openFile(fixture("basic.h5"))
+	if err := a.state.SelectPath("/matrix"); err != nil {
+		t.Fatal(err)
+	}
+	a.tab = tabData
+	a.dataMode = modeImage // 文件 A：图像模式
+	tt.Frame()             // 登记文件 A 为当前文件
+
+	a.openFile(fixture("compressed.h5"))
+	if err := a.state.SelectPath("/compressed"); err != nil {
+		t.Fatal(err)
+	}
+	a.tab, a.dataMode = tabData, modeTable
+	tt.Frame() // view() 保存文件 A 状态并恢复文件 B 默认状态
+	if a.dataMode != modeTable {
+		t.Fatalf("新文件应为默认模式，实际 mode=%d", a.dataMode)
+	}
+
+	// 切回文件 A 的根节点：图像模式与选中对象恢复。
+	a.state.Select(a.files[0].doc.Root().ID)
+	tt.Frame()
+	if a.dataMode != modeImage {
+		t.Fatalf("文件 A 应保持图像模式，实际 %d", a.dataMode)
+	}
+	if a.state.Current == nil || a.state.Current.ID.File != absFixture(t, "basic.h5") {
+		t.Fatalf("文件 A 的选中对象应属于 basic.h5，实际 %+v", a.state.Current)
+	}
+}
+
+// TestCloseDocument 覆盖任务 2.2：关闭选中文件释放句柄并从树移除，最后回到空状态。
+func TestCloseDocument(t *testing.T) {
+	a, tt := newTester(t)
+	a.openFile(fixture("basic.h5"))
+	a.openFile(fixture("compressed.h5"))
+	a.openFile(fixture("types.h5"))
+	if len(a.files) != 3 {
+		t.Fatalf("应有 3 个文件，实际 %d", len(a.files))
+	}
+
+	// 关闭当前选中的第三个文件。
+	current := a.currentFile()
+	doc := a.state.Document()
+	root := doc.Root()
+	a.closeFile()
+	tt.Frame()
+	if len(a.files) != 2 || a.currentFile() == current {
+		t.Fatalf("关闭后应剩 2 个文件且切换选中，files=%d current=%q", len(a.files), a.currentFile())
+	}
+	if _, err := root.Children(); err == nil {
+		t.Error("关闭后句柄应释放")
+	}
+
+	// 清空其余文件。
+	for len(a.files) > 0 {
+		a.closeFile()
+		tt.Frame()
+	}
+	if len(a.files) != 0 || a.state.HasDocument() {
+		t.Fatalf("关闭全部后应为空状态，files=%d", len(a.files))
+	}
+	if !tt.HasText("打开 HDF5 文件或把文件拖入窗口") {
+		t.Fatalf("应回到空状态提示")
+	}
+}
+
+// absFixture 返回夹具绝对路径，供去重断言使用。
+func absFixture(t *testing.T, name string) string {
+	t.Helper()
+	abs, err := filepath.Abs(fixture(name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return abs
+}
+
+// TestTreeRootSelectionSwitches 覆盖任务 3.1：选中不同文件的树节点即切换数据来源。
+func TestTreeRootSelectionSwitches(t *testing.T) {
+	a, tt := newTester(t)
+	a.openFile(fixture("basic.h5"))
+	a.openFile(fixture("compressed.h5"))
+	tt.Frame()
+
+	if a.currentFile() != absFixture(t, "compressed.h5") {
+		t.Fatalf("当前应为 compressed.h5，实际 %q", a.currentFile())
+	}
+	// 选中 basic.h5 根节点：右侧标题与状态栏跟随该文件。
+	a.state.Select(a.files[0].doc.Root().ID)
+	tt.Frame()
+	if a.currentFile() != absFixture(t, "basic.h5") {
+		t.Fatalf("选中 basic 树根应切换文件，current=%q", a.currentFile())
+	}
+	if !tt.HasText("basic.h5") {
+		t.Fatalf("状态栏应显示 basic.h5，texts %q", tt.Texts())
+	}
+	// 无标签栏残留。
+	if tt.HasText("关闭 basic.h5") {
+		t.Fatalf("不应再显示文档标签关闭按钮，texts %q", tt.Texts())
+	}
+}
+
+// failingReader 让某个文件的所有读取都返回错误。
+type failingReader struct{ err error }
+
+func (f failingReader) ReadSlice(*hdf5.Node, []uint64, []uint64) (*hdf5.Slice, error) {
+	return nil, f.err
+}
+func (f failingReader) ReadStrings(*hdf5.Node) (*hdf5.Strings, error) {
+	return nil, f.err
+}
+func (f failingReader) ReadCompound(*hdf5.Node) (*hdf5.Compound, error) {
+	return nil, f.err
+}
+func (f failingReader) ReadStrided(*hdf5.Node, uint64, uint64, uint64, uint64, uint64, uint64) (*hdf5.Slice, error) {
+	return nil, f.err
+}
+
+// TestReadFailureIsolation 覆盖任务 4.2：某文件读取失败显示提示后仍可切换其它文件浏览。
+func TestReadFailureIsolation(t *testing.T) {
+	a, tt := newTester(t)
+	a.openFile(fixture("basic.h5"))
+	a.openFile(fixture("compressed.h5"))
+	tt.Frame()
+
+	// 让 basic.h5 的读取失败。
+	basic := absFixture(t, "basic.h5")
+	a.state.AddFileReader(basic, failingReader{err: errors.New("读取失败")})
+	a.state.Select(a.files[0].doc.Root().ID)
+	if err := a.state.SelectPath("/matrix"); err != nil {
+		t.Fatal(err)
+	}
+	a.tab = tabData
+	tt.Frame()
+	if !tt.HasText("读取失败") {
+		t.Fatalf("应显示读取失败提示，texts %q", tt.Texts())
+	}
+
+	// 切到 compressed.h5：提示仍可见，但另一个文件能正常读取。
+	a.state.Select(a.files[1].doc.Root().ID)
+	if err := a.state.SelectPath("/compressed"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if !tt.HasText("compressed.h5") {
+		t.Fatalf("应能切换并浏览第二个文件，texts %q", tt.Texts())
+	}
+	if a.state.Err != nil && a.state.Err.Error() == "读取失败" {
+		t.Fatalf("切到其它文件后不应再显示前一个文件的读取错误")
+	}
+}
+
+// fakeWindowHandle 记录独立窗口的生命周期事件。
+type fakeWindowHandle struct {
+	title        string
+	shown        bool
+	closed       bool
+	invalidates  int
+	buttonsTheme mygo.ThemeSource
+	closeFn      func(*mygo.CloseEvent)
+}
+
+func (f *fakeWindowHandle) Show()                                    { f.shown = true }
+func (f *fakeWindowHandle) Close()                                   { f.closed = true }
+func (f *fakeWindowHandle) Invalidate()                              { f.invalidates++ }
+func (f *fakeWindowHandle) SetTitle(t string)                        { f.title = t }
+func (f *fakeWindowHandle) SetWindowButtonsTheme(s mygo.ThemeSource) { f.buttonsTheme = s }
+func (f *fakeWindowHandle) OnClose(fn func(*mygo.CloseEvent)) func() {
+	f.closeFn = fn
+	return func() {}
+}
+
+// TestDetachTableWindow 覆盖任务 1.2/2.1/2.2/3.2：假工厂验证创建、
+// 标题、内容固定与关闭清理。
+func TestDetachTableWindow(t *testing.T) {
+	a, tt := newTester(t)
+	a.openFile(fixture("basic.h5"))
+	if err := a.state.SelectPath("/matrix"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+
+	var handles []*fakeWindowHandle
+	a.newTableWindow = func(opts mygo.WindowOptions) windowHandle {
+		h := &fakeWindowHandle{title: opts.Title}
+		handles = append(handles, h)
+		return h
+	}
+
+	a.openTableInWindow()
+	if len(handles) != 1 || len(a.windows) != 1 {
+		t.Fatalf("应创建一个独立窗口，handles=%d windows=%d", len(handles), len(a.windows))
+	}
+	if !handles[0].shown || !strings.Contains(handles[0].title, "matrix") || !strings.Contains(handles[0].title, "basic.h5") {
+		t.Fatalf("窗口应显示且标题含数据集与文件：%+v", handles[0])
+	}
+
+	// 内容固定：主窗口切换选中后，独立窗口的 App 仍指向打开时的数据集。
+	detached := a.windows[0].state
+	before := detached.Current
+	if before == nil || before.Path != "/matrix" {
+		t.Fatalf("独立窗口应定位到 /matrix，实际 %+v", before)
+	}
+	if err := a.state.SelectPath("/results"); err != nil {
+		t.Fatal(err)
+	}
+	tt.Frame()
+	if detached.Current != before || detached.Current.Path != "/matrix" {
+		t.Fatalf("独立窗口内容不应随主窗口变化：%+v", detached.Current)
+	}
+
+	// 关闭：集合减少、窗口被 Close，但主窗口文档仍打开。
+	a.closeTableWindow(a.windows[0])
+	if len(a.windows) != 0 || !handles[0].closed {
+		t.Fatalf("关闭后 windows=%d closed=%v", len(a.windows), handles[0].closed)
+	}
+	if !a.state.HasDocument() {
+		t.Fatal("关闭独立窗口不应关闭主窗口文档")
+	}
+}
+
+// TestDetachedWindowUsesDarkTheme 覆盖任务 5.1：独立窗口内容视图应用深色主题与背景。
+func TestDetachedWindowUsesDarkTheme(t *testing.T) {
+	st := view.NewApp()
+	var bg ui.Color
+	tt := ui.NewTester(func(c *ui.Context) {
+		detachedTableView(st, "test")(c)
+		bg = c.Theme().Background
+	}, 800, 600)
+	tt.Frame()
+	if bg.R != view.ColBg.R || bg.G != view.ColBg.G || bg.B != view.ColBg.B || bg.A != view.ColBg.A {
+		t.Fatalf("独立窗口应使用深色主题背景 %+v，实际 %+v", view.ColBg, bg)
+	}
+}
+
+// TestDetachedWindowHiddenTitleBar 覆盖独立窗口标题栏样式：隐藏原生标题栏、深色窗口按钮。
+func TestDetachedWindowHiddenTitleBar(t *testing.T) {
+	a, _ := newTester(t)
+	a.openFile(fixture("basic.h5"))
+	if err := a.state.SelectPath("/matrix"); err != nil {
+		t.Fatal(err)
+	}
+	var got mygo.WindowOptions
+	var handle *fakeWindowHandle
+	a.newTableWindow = func(opts mygo.WindowOptions) windowHandle {
+		got = opts
+		handle = &fakeWindowHandle{title: opts.Title}
+		return handle
+	}
+	a.openTableInWindow()
+	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+		if got.TitleBarStyle != mygo.TitleBarHidden || got.TitleBarHeight != topBarH {
+			t.Fatalf("独立窗口应隐藏原生标题栏并预留顶栏高度：style=%q height=%d", got.TitleBarStyle, got.TitleBarHeight)
+		}
+	}
+	if handle.buttonsTheme != mygo.ThemeDark {
+		t.Fatalf("窗口按钮应按深色背景配色，实际 %q", handle.buttonsTheme)
+	}
+}
+
+// TestMultipleDetachedWindowTitleBars 覆盖多个独立窗口各自隐藏原生标题栏并使用深色按钮。
+func TestMultipleDetachedWindowTitleBars(t *testing.T) {
+	a, _ := newTester(t)
+	a.openFile(fixture("basic.h5"))
+	if err := a.state.SelectPath("/matrix"); err != nil {
+		t.Fatal(err)
+	}
+	var handles []*fakeWindowHandle
+	a.newTableWindow = func(opts mygo.WindowOptions) windowHandle {
+		h := &fakeWindowHandle{title: opts.Title}
+		handles = append(handles, h)
+		return h
+	}
+	a.openTableInWindow()
+	a.openTableInWindow()
+	if len(handles) != 2 {
+		t.Fatalf("应创建 2 个窗口，实际 %d", len(handles))
+	}
+	for i, h := range handles {
+		if h.buttonsTheme != mygo.ThemeDark {
+			t.Errorf("窗口 %d 按钮主题应深色，实际 %q", i, h.buttonsTheme)
+		}
+	}
+}
+
+// TestDetachButton 覆盖任务 3.1：数据视图工具栏显示「独立窗口」按钮且可点击。
+func TestDetachButton(t *testing.T) {
+	a, tt := newTester(t)
+	a.openFile(fixture("basic.h5"))
+	if err := a.state.SelectPath("/matrix"); err != nil {
+		t.Fatal(err)
+	}
+	a.tab = tabData
+	var opened int
+	// 用真实 openTableInWindow 会触发原生窗口；替换为计数以断言点击。
+	orig := a.windows
+	a.newTableWindow = func(opts mygo.WindowOptions) windowHandle {
+		opened++
+		return &fakeWindowHandle{title: opts.Title}
+	}
+	tt.Frame()
+	_ = orig
+	if !tt.HasText("独立窗口") {
+		t.Fatalf("工具栏应显示「独立窗口」按钮，texts %q", tt.Texts())
+	}
+	if err := tt.Click("独立窗口"); err != nil {
+		t.Fatalf("点击独立窗口: %v", err)
+	}
+	if opened != 1 {
+		t.Fatalf("点击应打开一个独立窗口，实际 %d", opened)
+	}
+}
+
+// TestCloseAllTableWindows 覆盖任务 3.2：主窗口退出时统一关闭所有独立窗口。
+func TestCloseAllTableWindows(t *testing.T) {
+	a, _ := newTester(t)
+	a.openFile(fixture("basic.h5"))
+	if err := a.state.SelectPath("/matrix"); err != nil {
+		t.Fatal(err)
+	}
+	var handles []*fakeWindowHandle
+	a.newTableWindow = func(opts mygo.WindowOptions) windowHandle {
+		h := &fakeWindowHandle{title: opts.Title}
+		handles = append(handles, h)
+		return h
+	}
+	a.openTableInWindow()
+	a.openTableInWindow()
+	if len(a.windows) != 2 {
+		t.Fatalf("应有 2 个独立窗口，实际 %d", len(a.windows))
+	}
+	a.closeAllTableWindows()
+	if len(a.windows) != 0 {
+		t.Fatalf("退出后应无独立窗口，实际 %d", len(a.windows))
+	}
+	for i, h := range handles {
+		if !h.closed {
+			t.Errorf("窗口 %d 应被关闭", i)
 		}
 	}
 }

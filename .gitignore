@@ -11,3 +11,10 @@ mygo_windows_*.syso
 .screenshots/
 docs/
 .gocache/
+
+# 本地临时/测试产物（不随版本发布）
+.DS_Store
+main.go.snapshot.txt
+data.csv
+data-all.csv
+/test/

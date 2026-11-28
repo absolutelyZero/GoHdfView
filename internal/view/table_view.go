@@ -47,6 +47,15 @@ func dataGrid(c *ui.Context, cols []gridCol, rows int, cell func(row, col int)) 
 		head.Children(func() {
 			for _, col := range cols {
 				h := ui.Row(c).Width(col.width).Shrink(0).Padding(0, tablePadX).AlignItems(ui.Center)
+				if col.gutter {
+					// 左上角交叉单元格：父级 head 负责纵向固定，本级负责横向固定，
+					// 两个方向叠加后始终停在表格左上角。
+					h.Background(ColHeadBg).Sticky().Left(0)
+					h.Draw(func(p *ui.Painter, r ui.Rect) {
+						Hairline(p, r, ColLine)
+						VLine(p, r, ColLine)
+					})
+				}
 				if col.align == ui.End {
 					h.Justify(ui.End)
 				}
@@ -65,6 +74,15 @@ func dataGrid(c *ui.Context, cols []gridCol, rows int, cell func(row, col int)) 
 					j := j
 					box := ui.Row(c).Width(cols[j].width).Shrink(0).
 						Padding(0, tablePadX).AlignItems(ui.Center)
+					if cols[j].gutter {
+						// 行号列横向固定在左侧；不透明背景防止滚动数据从下方透出，
+						// 右侧细线与其余数据列明确分界。
+						box.Background(ColBg).Sticky().Left(0)
+						box.Draw(func(p *ui.Painter, r ui.Rect) {
+							Hairline(p, r, ColRowLine)
+							VLine(p, r, ColLine)
+						})
+					}
 					if cols[j].align == ui.End {
 						box.Justify(ui.End)
 					}
@@ -142,27 +160,54 @@ func (a *App) datatype() hdf5.DatatypeInfo {
 	return info.Datatype
 }
 
-// tableToolbar 显示维度选择器（秩 ≥ 3）。
+// tableToolbar 显示维度选择器（秩 ≥ 3）与 CSV 导出入口。
 func tableToolbar(c *ui.Context, app *App, l TableLayout) {
-	if len(l.Leading) == 0 {
+	showLeading := len(l.Leading) > 0
+	showExport := app.CanExportCSV(l)
+	showDetach := app.CanDetachTable()
+	if !showLeading && !showExport && !showDetach {
 		return
 	}
 	bar := ui.Row(c).Shrink(0).AlignItems(ui.Center).Padding(6, 20).Gap(10)
 	bar.Draw(func(p *ui.Painter, r ui.Rect) { Hairline(p, r, ColLineSoft) })
 	bar.Children(func() {
-		ui.Text(c, "固定前导维").FontSize(11).TextColor(ColMute).SingleLine()
-		for i := range l.Leading {
-			idx := i
-			limit := int(l.Dims[idx])
-			opts := dimOptions(limit)
-			sel := strconv.FormatUint(app.Table.Fixed[idx], 10)
-			ui.Select(c, &sel, opts).OnChange(func() {
-				if v, err := strconv.ParseUint(sel, 10, 64); err == nil {
-					app.SetFixedDim(idx, v)
-				}
-			})
+		if showLeading {
+			ui.Text(c, "固定前导维").FontSize(11).TextColor(ColMute).SingleLine()
+			for i := range l.Leading {
+				idx := i
+				limit := int(l.Dims[idx])
+				opts := dimOptions(limit)
+				sel := strconv.FormatUint(app.Table.Fixed[idx], 10)
+				ui.Select(c, &sel, opts).OnChange(func() {
+					if v, err := strconv.ParseUint(sel, 10, 64); err == nil {
+						app.SetFixedDim(idx, v)
+					}
+				})
+			}
+		}
+		if showExport || showDetach {
+			ui.Spacer(c).Grow(1)
+		}
+		if showDetach {
+			GhostButton(c, "独立窗口", func() { app.tableDetacher() })
+		}
+		if showExport {
+			exportButton(c, app, l)
 		}
 	})
+}
+
+// exportButton 是「导出 CSV」入口：菜单给出当前页与整个数据集两个选项。
+func exportButton(c *ui.Context, app *App, l TableLayout) {
+	b := GhostButton(c, "导出 CSV", nil)
+	b.PopoverMenuButton(func(m *ui.Menu) {
+		if m.Item("当前页").Chosen() {
+			app.csvExporter(CSVScopePage, app.csvWrite(l, CSVScopePage))
+		}
+		if m.Item("整个数据集").Chosen() {
+			app.csvExporter(CSVScopeAll, app.csvWrite(l, CSVScopeAll))
+		}
+	}, ui.PopoverMenuButtonOptions{})
 }
 
 // dimOptions 生成维度选择器的选项；过大的维度只列出前若干项。

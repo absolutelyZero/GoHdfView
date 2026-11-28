@@ -23,6 +23,8 @@ type fakeSource struct {
 
 func (f *fakeSource) Root() *hdf5.Node { return f.root }
 
+func (f *fakeSource) Roots() []*hdf5.Node { return []*hdf5.Node{f.root} }
+
 func (f *fakeSource) Children(n *hdf5.Node) ([]*hdf5.Node, error) {
 	f.calls++
 	return f.kids[n.ID], nil

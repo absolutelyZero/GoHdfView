@@ -7,6 +7,7 @@ import (
 	"math/bits"
 	"os"
 	"path"
+	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
@@ -66,6 +67,8 @@ func Open(p string) (*Document, error) {
 
 	doc := &Document{path: p, size: info.Size(), limit: DefaultReadLimit, file: f}
 	doc.root = doc.wrapGroup(f.Root(), "", "/")
+	// 统一对象树里每个文件是一个顶层节点，根名称用文件名展示。
+	doc.root.Name = filepath.Base(p)
 	return doc, nil
 }
 
@@ -195,7 +198,7 @@ func (d *Document) wrapGroup(g *libhdf5.Group, name, p string) *Node {
 	if name == "" {
 		name = "/"
 	}
-	return &Node{ID: NodeID{Address: 0, Kind: KindGroup, Path: p}, Name: name, Path: p, Kind: KindGroup, group: g, doc: d}
+	return &Node{ID: NodeID{File: d.path, Address: 0, Kind: KindGroup, Path: p}, Name: name, Path: p, Kind: KindGroup, group: g, doc: d}
 }
 
 // Children 返回节点的直接子节点。
@@ -223,7 +226,7 @@ func (n *Node) Children() ([]*Node, error) {
 		case *libhdf5.Group:
 			childPath := joinPath(n.Path, o.Name())
 			out = append(out, &Node{
-				ID:    NodeID{Kind: KindGroup, Path: childPath},
+				ID:    NodeID{File: n.doc.path, Kind: KindGroup, Path: childPath},
 				Name:  o.Name(),
 				Path:  childPath,
 				Kind:  KindGroup,
@@ -234,7 +237,7 @@ func (n *Node) Children() ([]*Node, error) {
 			childPath := joinPath(n.Path, o.Name())
 			shape, rank := shapeInfo(o)
 			out = append(out, &Node{
-				ID:        NodeID{Address: o.Address(), Kind: KindDataset, Path: childPath},
+				ID:        NodeID{File: n.doc.path, Address: o.Address(), Kind: KindDataset, Path: childPath},
 				Name:      o.Name(),
 				Path:      childPath,
 				Kind:      KindDataset,
@@ -246,7 +249,7 @@ func (n *Node) Children() ([]*Node, error) {
 		case *libhdf5.NamedDatatype:
 			childPath := joinPath(n.Path, o.Name())
 			out = append(out, &Node{
-				ID:   NodeID{Kind: KindNamedType, Path: childPath},
+				ID:   NodeID{File: n.doc.path, Kind: KindNamedType, Path: childPath},
 				Name: o.Name(),
 				Path: childPath,
 				Kind: KindNamedType,
